@@ -1,0 +1,16 @@
+{
+  "name": "just-fit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "《装满这一箱》原生微信小游戏",
+  "scripts": {
+    "test": "node tests/run-tests.js",
+    "validate": "node tests/validate-project.js",
+    "assets": "node scripts/generate-audio.js && node scripts/generate-rare-fruits.js",
+    "build:web": "esbuild game.js --bundle --format=iife --platform=browser --outfile=web/game.bundle.js --sourcemap",
+    "serve:web": "node scripts/serve-web.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

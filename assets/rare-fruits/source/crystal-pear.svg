@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs>
+<filter id="glow" x="-35%" y="-35%" width="170%" height="170%">
+  <feGaussianBlur stdDeviation="8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+</filter>
+<linearGradient id="shine" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff" stop-opacity=".76"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <linearGradient id="pear" x1=".15" y1=".05" x2=".85" y2=".95"><stop stop-color="#F0FFFF"/><stop offset=".31" stop-color="#8EE9E8"/><stop offset=".68" stop-color="#61BCD6"/><stop offset="1" stop-color="#6D79C4"/></linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#FFF2A4"/><stop offset=".55" stop-color="#F5C752"/><stop offset="1" stop-color="#D08C27"/></linearGradient></defs>
+    <path d="M268 112c2-39 16-67 44-84" fill="none" stroke="#94703A" stroke-width="16" stroke-linecap="round"/>
+    <path d="M285 87c37-34 79-30 101-10-35 4-64 20-85 48z" fill="url(#gold)" stroke="#BF872B" stroke-width="8"/>
+    <path d="M256 101c-61 0-70 72-85 104-19 41-72 73-68 139 4 72 65 113 153 113s149-41 153-113c4-66-49-98-68-139-15-32-24-104-85-104z" fill="url(#pear)" stroke="#4F7DB1" stroke-width="11"/>
+    <path d="M256 108 189 212l67 245 67-245z" fill="#fff" opacity=".18"/><path d="m189 212-80 126 147 119zm134 0 80 126-147 119z" fill="#4766B5" opacity=".13"/>
+    <g fill="none" stroke="#E9FFFF" stroke-width="5" opacity=".5"><path d="M189 212 256 255l67-43"/><path d="M109 338h294"/><path d="m189 212 67 245 67-245"/></g>
+    <ellipse cx="191" cy="194" rx="29" ry="52" transform="rotate(23 191 194)" fill="url(#shine)" opacity=".76"/>
+    <g filter="url(#glow)"><polygon points="256.0,132.0 262.2,146.4 277.9,147.9 266.1,158.3 269.5,173.6 256.0,165.6 242.5,173.6 245.9,158.3 234.1,147.9 249.8,146.4" fill="#FFF4A7"/></g></svg>

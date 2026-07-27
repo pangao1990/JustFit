@@ -1,0 +1,103 @@
+{
+  "description": "装满这一箱 - 原生 Canvas 微信休闲小游戏",
+  "packOptions": {
+    "ignore": [
+      {
+        "value": "node_modules",
+        "type": "folder"
+      },
+      {
+        "value": "tests",
+        "type": "folder"
+      },
+      {
+        "value": "scripts",
+        "type": "folder"
+      },
+      {
+        "value": "web",
+        "type": "folder"
+      },
+      {
+        "value": "output",
+        "type": "folder"
+      },
+      {
+        "value": "doc",
+        "type": "folder"
+      },
+      {
+        "value": ".playwright-cli",
+        "type": "folder"
+      },
+      {
+        "value": "assets/rare-fruits/source",
+        "type": "folder"
+      },
+      {
+        "value": "package.json",
+        "type": "file"
+      },
+      {
+        "value": "package-lock.json",
+        "type": "file"
+      },
+      {
+        "value": "readme.md",
+        "type": "file"
+      },
+      {
+        "value": "assets/game-icon.svg",
+        "type": "file"
+      },
+      {
+        "value": "assets/share-card.svg",
+        "type": "file"
+      },
+      {
+        "value": "微信个人主体IAA小游戏_调研与执行计划.md",
+        "type": "file"
+      }
+    ],
+    "include": []
+  },
+  "setting": {
+    "urlCheck": true,
+    "es6": true,
+    "enhance": true,
+    "postcss": false,
+    "minified": true,
+    "compileHotReLoad": true,
+    "useApiHook": true,
+    "useApiHostProcess": true,
+    "useMultiFrameRuntime": true,
+    "useIsolateContext": true,
+    "useCompilerModule": true,
+    "uploadWithSourceMap": true,
+    "packNpmManually": false,
+    "packNpmRelationList": [],
+    "uglifyFileName": false,
+    "compileWorklet": false,
+    "minifyWXSS": true,
+    "minifyWXML": true,
+    "localPlugins": false,
+    "disableUseStrict": false,
+    "useCompilerPlugins": false,
+    "condition": false,
+    "babelSetting": {
+      "ignore": [],
+      "disablePlugins": [],
+      "outputPath": ""
+    }
+  },
+  "compileType": "game",
+  "gameRoot": "./",
+  "openDataContextRoot": "open-data",
+  "libVersion": "3.7.12",
+  "appid": "wx75972d9e7b0bced5",
+  "projectname": "JustFit-FillTheBox",
+  "condition": {},
+  "simulatorPluginLibVersion": {},
+  "editorSetting": {},
+  "isGameTourist": false
+}

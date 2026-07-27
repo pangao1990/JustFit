@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs>
+<filter id="glow" x="-35%" y="-35%" width="170%" height="170%">
+  <feGaussianBlur stdDeviation="8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+</filter>
+<linearGradient id="shine" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff" stop-opacity=".76"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <radialGradient id="space" cx="42%" cy="41%" r="67%"><stop stop-color="#8063C9"/><stop offset=".42" stop-color="#3E4F9B"/><stop offset="1" stop-color="#18245A"/></radialGradient>
+    <linearGradient id="rind" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#85F0CD"/><stop offset=".5" stop-color="#36B29B"/><stop offset="1" stop-color="#176D70"/></linearGradient></defs>
+    <path d="M75 164c132-97 313-96 364 0-19 164-93 279-182 279S94 328 75 164z" fill="url(#rind)" stroke="#155C68" stroke-width="13"/><path d="M104 171c113-67 267-67 305 0-25 135-83 231-152 231s-127-96-153-231z" fill="url(#space)" stroke="#B7EBD2" stroke-width="11"/>
+    <path d="M145 213c90-53 180-46 247 7-97-25-170-6-236 52" fill="none" stroke="#D777D7" stroke-width="24" stroke-linecap="round" opacity=".45" filter="url(#glow)"/><path d="M133 292c93-49 178-36 240 21-91-29-165-17-222 37" fill="none" stroke="#5CE2D2" stroke-width="17" stroke-linecap="round" opacity=".5"/>
+    <g filter="url(#glow)"><polygon points="190.0,227.0 195.9,240.8 210.9,242.2 199.6,252.1 202.9,266.8 190.0,259.1 177.1,266.8 180.4,252.1 169.1,242.2 184.1,240.8" fill="#FFF0A0"/><polygon points="301.0,201.0 305.9,212.3 318.1,213.4 308.9,221.6 311.6,233.6 301.0,227.3 290.4,233.6 293.1,221.6 283.9,213.4 296.1,212.3" fill="#FFF0A0"/><polygon points="258.0,315.0 263.9,328.8 278.9,330.2 267.6,340.1 270.9,354.8 258.0,347.1 245.1,354.8 248.4,340.1 237.1,330.2 252.1,328.8" fill="#FFF0A0"/><circle cx="344" cy="300" r="9" fill="#FFF0A0"/><circle cx="205" cy="370" r="7" fill="#FFF0A0"/></g><ellipse cx="162" cy="179" rx="34" ry="44" transform="rotate(18 162 179)" fill="url(#shine)" opacity=".48"/></svg>

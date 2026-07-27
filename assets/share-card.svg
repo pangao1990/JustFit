@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="800" viewBox="0 0 1000 800">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#D9F7F1"/>
+      <stop offset=".47" stop-color="#FFF4D9"/>
+      <stop offset="1" stop-color="#F8CFB1"/>
+    </linearGradient>
+    <linearGradient id="box" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#E8A45F"/>
+      <stop offset="1" stop-color="#B76A40"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#3D3152" flood-opacity=".18"/>
+    </filter>
+  </defs>
+  <rect width="1000" height="800" fill="url(#bg)"/>
+  <g opacity=".34" fill="#fff">
+    <circle cx="82" cy="92" r="20"/><circle cx="890" cy="91" r="42"/><circle cx="930" cy="300" r="13"/>
+    <circle cx="92" cy="640" r="35"/><circle cx="520" cy="86" r="11"/><circle cx="703" cy="696" r="23"/>
+  </g>
+  <g opacity=".13" fill="#8B5A43">
+    <rect x="15" y="226" width="130" height="360" rx="22"/>
+    <rect x="855" y="226" width="130" height="360" rx="22"/>
+    <path d="M27 285h106v12H27zm0 105h106v12H27zm0 105h106v12H27zM867 285h106v12H867zm0 105h106v12H867zm0 105h106v12H867z"/>
+  </g>
+  <rect x="278" y="43" width="444" height="101" rx="42" fill="#fff" opacity=".86"/>
+  <text x="500" y="116" text-anchor="middle" font-family="PingFang SC,Microsoft YaHei,sans-serif" font-size="70" font-weight="900" fill="#3D3152">装满这一箱</text>
+  <text x="500" y="754" text-anchor="middle" font-family="PingFang SC,Microsoft YaHei,sans-serif" font-size="29" font-weight="700" fill="#756A84">看着简单，第三箱开始根本停不下来</text>
+  <g filter="url(#shadow)">
+    <rect x="255" y="397" width="490" height="289" rx="50" fill="url(#box)"/>
+    <path d="m265 414 164-145 47 158z" fill="#FFD38F"/>
+    <path d="m735 414-164-145-47 158z" fill="#F3B670"/>
+    <rect x="383" y="559" width="234" height="76" rx="20" fill="#FFF5D8"/>
+    <circle cx="440" cy="597" r="17" fill="#F8C75C"/>
+    <circle cx="500" cy="597" r="17" fill="#F8C75C"/>
+    <circle cx="560" cy="597" r="17" fill="#F8C75C"/>
+  </g>
+  <g>
+    <circle cx="392" cy="382" r="91" fill="#FF786B"/>
+    <circle cx="360" cy="350" r="22" fill="#fff" opacity=".34"/>
+  </g>
+  <g>
+    <circle cx="608" cy="382" r="91" fill="#9277E5"/>
+    <circle cx="576" cy="350" r="22" fill="#fff" opacity=".3"/>
+  </g>
+  <g>
+    <circle cx="500" cy="315" r="82" fill="#46C7B7"/>
+    <circle cx="472" cy="286" r="19" fill="#fff" opacity=".32"/>
+  </g>
+  <g transform="translate(690 190) rotate(8)">
+    <rect width="220" height="72" rx="30" fill="#9277E5"/>
+    <text x="110" y="48" text-anchor="middle" font-family="PingFang SC,Microsoft YaHei,sans-serif" font-size="29" font-weight="800" fill="#fff">好友等你挑战</text>
+  </g>
+</svg>

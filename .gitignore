@@ -1,0 +1,8 @@
+node_modules/
+web/game.bundle.js
+web/game.bundle.js.map
+.DS_Store
+project.private.config.json
+*.log
+.playwright-cli/
+output/

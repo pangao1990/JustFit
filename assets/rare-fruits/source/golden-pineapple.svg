@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs>
+<filter id="glow" x="-35%" y="-35%" width="170%" height="170%">
+  <feGaussianBlur stdDeviation="8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+</filter>
+<linearGradient id="shine" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff" stop-opacity=".76"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <linearGradient id="pine" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#FFF19B"/><stop offset=".45" stop-color="#F5BE3F"/><stop offset="1" stop-color="#CE7D27"/></linearGradient>
+    <linearGradient id="crown" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#AAF2C2"/><stop offset=".52" stop-color="#48B986"/><stop offset="1" stop-color="#267A66"/></linearGradient></defs>
+    <g fill="url(#crown)" stroke="#267A66" stroke-width="9" stroke-linejoin="round"><path d="m256 175-55-135c52 32 72 68 74 129z"/><path d="m249 172 56-142c20 60 6 103-36 152z"/><path d="m235 180-115-93c62 7 101 34 131 88z"/><path d="m276 179 118-85c-27 58-64 85-121 100z"/><path d="m249 176-3-151c37 51 43 95 20 154z"/></g>
+    <path d="M256 153c99 0 151 71 144 163-8 107-61 169-144 169s-136-62-144-169c-7-92 45-163 144-163z" fill="url(#pine)" stroke="#B87325" stroke-width="12"/>
+    <g fill="none" stroke="#B87325" stroke-width="8" opacity=".7"><path d="M140 228 370 435"/><path d="M117 291 328 480"/><path d="m373 216-232 220"/><path d="m396 281-207 197"/></g>
+    <g stroke="#D2962E" stroke-width="3"><polygon points="210.0,225.0 217.3,242.0 235.7,243.7 221.8,255.8 225.9,273.8 210.0,264.4 194.1,273.8 198.2,255.8 184.3,243.7 202.7,242.0" fill="#FFF1A0"/><polygon points="304.0,296.0 311.3,313.0 329.7,314.7 315.8,326.8 319.9,344.8 304.0,335.4 288.1,344.8 292.2,326.8 278.3,314.7 296.7,313.0" fill="#FFF1A0"/><polygon points="220.0,370.0 227.3,387.0 245.7,388.7 231.8,400.8 235.9,418.8 220.0,409.4 204.1,418.8 208.2,400.8 194.3,388.7 212.7,387.0" fill="#FFF1A0"/></g><g filter="url(#glow)"><polygon points="256.0,83.0 265.7,105.6 290.2,107.9 271.7,124.1 277.2,148.1 256.0,135.6 234.8,148.1 240.3,124.1 221.8,107.9 246.3,105.6" fill="#FFF8BD"/></g>
+    <ellipse cx="188" cy="230" rx="30" ry="54" transform="rotate(25 188 230)" fill="url(#shine)" opacity=".56"/></svg>

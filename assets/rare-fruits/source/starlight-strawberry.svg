@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs>
+<filter id="glow" x="-35%" y="-35%" width="170%" height="170%">
+  <feGaussianBlur stdDeviation="8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+</filter>
+<linearGradient id="shine" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff" stop-opacity=".76"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <radialGradient id="berry" cx="30%" cy="20%" r="80%"><stop stop-color="#FF9498"/><stop offset=".5" stop-color="#F4516B"/><stop offset="1" stop-color="#B92D56"/></radialGradient>
+    <linearGradient id="leaf" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#A8EA77"/><stop offset="1" stop-color="#3BA76C"/></linearGradient></defs>
+    <path d="M256 438C177 390 112 307 124 219c9-66 57-99 105-73 18-35 78-35 96 0 48-26 96 7 105 73 12 88-53 171-174 219z" fill="url(#berry)" stroke="#A72C50" stroke-width="11"/>
+    <path d="M254 158c-48-36-91-34-117-12 35 5 60 20 76 45-40-5-66 9-80 32 49-7 84 2 107 28 5-39 10-69 14-93z" fill="url(#leaf)" stroke="#32875A" stroke-width="8"/>
+    <path d="M258 158c48-36 91-34 117-12-35 5-60 20-76 45 40-5 66 9 80 32-49-7-84 2-107 28-5-39-10-69-14-93z" fill="url(#leaf)" stroke="#32875A" stroke-width="8"/>
+    <path d="M230 145c5-43 23-68 54-80-9 30-7 59 8 88z" fill="#62C775" stroke="#32875A" stroke-width="8"/>
+    <g filter="url(#glow)" stroke="#D89E2D" stroke-width="3"><polygon points="186.0,226.0 191.1,237.9 204.1,239.1 194.3,247.7 197.2,260.4 186.0,253.7 174.8,260.4 177.7,247.7 167.9,239.1 180.9,237.9" fill="#FFDE69"/><polygon points="271.0,200.0 276.1,211.9 289.1,213.1 279.3,221.7 282.2,234.4 271.0,227.7 259.8,234.4 262.7,221.7 252.9,213.1 265.9,211.9" fill="#FFDE69"/><polygon points="338.0,254.0 343.1,265.9 356.1,267.1 346.3,275.7 349.2,288.4 338.0,281.7 326.8,288.4 329.7,275.7 319.9,267.1 332.9,265.9" fill="#FFDE69"/><polygon points="223.0,312.0 228.1,323.9 241.1,325.1 231.3,333.7 234.2,346.4 223.0,339.7 211.8,346.4 214.7,333.7 204.9,325.1 217.9,323.9" fill="#FFDE69"/><polygon points="304.0,335.0 309.1,346.9 322.1,348.1 312.3,356.7 315.2,369.4 304.0,362.7 292.8,369.4 295.7,356.7 285.9,348.1 298.9,346.9" fill="#FFDE69"/></g>
+    <ellipse cx="184" cy="210" rx="31" ry="54" transform="rotate(25 184 210)" fill="url(#shine)" opacity=".64"/></svg>

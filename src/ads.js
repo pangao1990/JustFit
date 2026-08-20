@@ -11,7 +11,10 @@ class AdManager {
     this.rewardLoaded = false;
     this.pendingReward = null;
     this.lastInterstitialAt = 0;
+    this.lastRewardedAt = 0;
     this.winsSinceInterstitial = 0;
+    this.interstitialsThisSession = 0;
+    this.sessionStartedAt = Date.now();
     this.enabled = Boolean(CONFIG.ADS.enabled);
     this._init();
   }
@@ -57,6 +60,7 @@ class AdManager {
     if (!this.rewarded) {
       if (this.platform.isDev) {
         this.platform.showToast('开发模式：已模拟完整观看');
+        this.lastRewardedAt = Date.now();
         return Promise.resolve({ completed: true, simulated: true });
       }
       return Promise.resolve({ completed: false, reason: 'not_configured' });
@@ -84,26 +88,39 @@ class AdManager {
     if (!this.pendingReward) return;
     const pending = this.pendingReward;
     this.pendingReward = null;
+    if (completed) this.lastRewardedAt = Date.now();
     pending.resolve({ completed, reason });
   }
 
   noteWin(level) {
     this.winsSinceInterstitial += 1;
+    return this.canShowInterstitial(level);
+  }
+
+  canShowInterstitial(level, options) {
+    const opts = options || {};
+    if (opts.suppress) return false;
     if (level < CONFIG.FIRST_INTERSTITIAL_LEVEL) return false;
     if (this.winsSinceInterstitial < CONFIG.INTERSTITIAL_LEVEL_INTERVAL) return false;
-    if (Date.now() - this.lastInterstitialAt < CONFIG.INTERSTITIAL_TIME_INTERVAL_MS) return false;
+    if (this.interstitialsThisSession >= CONFIG.MAX_INTERSTITIALS_PER_SESSION) return false;
+    const now = Date.now();
+    if (now - this.sessionStartedAt < CONFIG.FIRST_INTERSTITIAL_SESSION_MS) return false;
+    if (this.lastInterstitialAt && now - this.lastInterstitialAt < CONFIG.INTERSTITIAL_TIME_INTERVAL_MS) return false;
+    if (this.lastRewardedAt && now - this.lastRewardedAt < CONFIG.REWARDED_INTERSTITIAL_COOLDOWN_MS) return false;
     return true;
   }
 
-  showInterstitial(level) {
-    if (!this.noteWin(level)) return Promise.resolve(false);
+  showInterstitial(level, options) {
+    if (!this.canShowInterstitial(level, options)) return Promise.resolve(false);
     if (!this.interstitial) return Promise.resolve(false);
-
-    this.winsSinceInterstitial = 0;
-    this.lastInterstitialAt = Date.now();
     this.analytics.report('interstitial_show', { level });
     return this.interstitial.show()
-      .then(() => true)
+      .then(() => {
+        this.winsSinceInterstitial = 0;
+        this.lastInterstitialAt = Date.now();
+        this.interstitialsThisSession += 1;
+        return true;
+      })
       .catch(() => false);
   }
 }
@@ -111,4 +128,3 @@ class AdManager {
 module.exports = {
   AdManager
 };
-

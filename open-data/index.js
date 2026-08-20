@@ -1,10 +1,11 @@
 'use strict';
 
 // 微信关系链数据只能在开放数据域读取。这里使用微信托管的好友数据，
-// 绘制“金币 / 藏品数”双榜，不依赖云函数或自建服务器。
+// 绘制“永久积分 / 藏品数”双榜；消费金币不会再导致好友排名倒退。
 const canvas = wx.getSharedCanvas();
 const ctx = canvas.getContext('2d');
-let currentMetric = 'coins';
+const FONT = '-apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif';
+let currentMetric = 'total_points';
 let currentRows = [];
 let hidden = false;
 let scrollOffset = 0;
@@ -29,12 +30,12 @@ wx.onMessage((message) => {
   if (message.type !== 'show_rank') return;
 
   hidden = false;
-  currentMetric = message.metric === 'collection_count' ? 'collection_count' : 'coins';
+  currentMetric = message.metric === 'collection_count' ? 'collection_count' : 'total_points';
   scrollOffset = 0;
   resolveSelfProfile();
   drawMessage('正在读取微信好友成绩…');
   wx.getFriendCloudStorage({
-    keyList: ['coins', 'collection_count'],
+    keyList: ['total_points', 'collection_count'],
     success(result) {
       currentRows = (result.data || []).slice().sort((a, b) => valueOf(b, currentMetric) - valueOf(a, currentMetric));
       render();
@@ -181,12 +182,13 @@ function drawRankRow(row, index, y, height, floating) {
   if (rank === 1) drawCrown(avatarX + avatarSize / 2, centerY - avatarSize / 2 - 8, rankColor);
 
   const nameX = avatarX + avatarSize + 18;
-  drawCentered(trimName(row.nickname || `好友${rank}`, 7), nameX, centerY - (floating ? 8 : 0), 22, '#3D3152', 'left', 800);
-  if (floating) drawCentered('我的排名', nameX, centerY + 20, 15, '#7458C7', 'left', 800);
+  const nameWidth = Math.max(72, width - (nameX - x) - 166);
+  drawCentered(trimName(row.nickname || `好友${rank}`, 7), nameX, centerY - (floating ? 8 : 0), 22, '#3D3152', 'left', 800, nameWidth);
+  if (floating) drawCentered('我的排名', nameX, centerY + 20, 15, '#7458C7', 'left', 800, nameWidth);
 
-  const suffix = currentMetric === 'collection_count' ? '件' : '金币';
+  const suffix = currentMetric === 'collection_count' ? '件' : '分';
   const valueColor = currentMetric === 'collection_count' ? '#278F82' : '#D99B20';
-  drawCentered(`${formatNumber(valueOf(row, currentMetric))}${suffix}`, x + width - 24, centerY, 23, valueColor, 'right', 900);
+  drawCentered(`${formatNumber(valueOf(row, currentMetric))}${suffix}`, x + width - 24, centerY, 23, valueColor, 'right', 900, 142);
 }
 
 function drawFloatingSelf(row, index) {
@@ -277,19 +279,55 @@ function drawAvatarImage(image, x, y, size) {
 
 function drawMessage(message) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  String(message).split('\n').forEach((line, index) => {
-    drawCentered(line, canvas.width / 2, canvas.height / 2 - 18 + index * 38, 23, '#756A84', 'center', 700);
+  const lines = String(message).split('\n');
+  const size = Math.max(20, Math.min(24, Math.floor(canvas.width / 25)));
+  const lineGap = size + 18;
+  const startY = canvas.height / 2 - (lines.length - 1) * lineGap / 2;
+  lines.forEach((line, index) => {
+    drawCentered(line, canvas.width / 2, startY + index * lineGap, size, '#756A84', 'center', 700, canvas.width - 64);
   });
 }
 
-function drawCentered(text, x, y, size, color, align, weight) {
+function drawCentered(text, x, y, size, color, align, weight, maxWidth) {
+  const readableWeight = normalizeFontWeight(weight);
+  const fitted = fitText(text, size, readableWeight, maxWidth);
   ctx.save();
-  ctx.font = `${weight || 700} ${size}px sans-serif`;
+  ctx.font = `${readableWeight} ${fitted.size}px ${FONT}`;
   ctx.fillStyle = color;
   ctx.textAlign = align || 'center';
   ctx.textBaseline = 'alphabetic';
-  ctx.fillText(String(text), x, y + size * 0.34);
+  const metrics = ctx.measureText(fitted.text);
+  const ascent = Number(metrics && metrics.actualBoundingBoxAscent);
+  const descent = Number(metrics && metrics.actualBoundingBoxDescent);
+  const hasBounds = Number.isFinite(ascent) && Number.isFinite(descent) && ascent + descent > 0;
+  const baselineY = y + (hasBounds ? (ascent - descent) / 2 : fitted.size * 0.34);
+  ctx.fillText(fitted.text, x, baselineY);
   ctx.restore();
+}
+
+function fitText(text, requestedSize, weight, maxWidth) {
+  let content = String(text == null ? '' : text);
+  let size = Math.max(12, Number(requestedSize) || 12);
+  const width = Math.max(0, Number(maxWidth) || 0);
+  if (!width) return { text: content, size };
+  ctx.save();
+  ctx.font = `${weight} ${size}px ${FONT}`;
+  while (size > 15 && ctx.measureText(content).width > width) {
+    size -= 1;
+    ctx.font = `${weight} ${size}px ${FONT}`;
+  }
+  if (ctx.measureText(content).width > width) {
+    const suffix = '…';
+    while (content.length > 1 && ctx.measureText(`${content}${suffix}`).width > width) content = content.slice(0, -1);
+    content += suffix;
+  }
+  ctx.restore();
+  return { text: content, size };
+}
+
+function normalizeFontWeight(weight) {
+  const value = Math.max(100, Math.min(900, Number(weight) || 700));
+  return Math.round(value / 100) * 100;
 }
 
 function roundedRect(x, y, width, height, radius) {

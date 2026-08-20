@@ -3,27 +3,16 @@
 const SPECIAL_PREFIX = 'special:';
 
 const ITEM_RULES = Object.freeze({
-  frozen: Object.freeze({
-    id: 'frozen',
-    name: '冻结',
-    badge: '冻',
+  sealed: Object.freeze({
+    id: 'sealed',
+    name: '封条',
+    badge: '封',
     color: '#3E9FD6',
     fill: '#EAF8FF',
     unlockLevel: 6,
-    directBonus: 18,
-    freezeMs: 1500,
-    description: '收下后操作冻结 1.5 秒，关卡时间继续流逝'
-  }),
-  drain: Object.freeze({
-    id: 'drain',
-    name: '耗时',
-    badge: '耗',
-    color: '#E96572',
-    fill: '#FFF0F1',
-    unlockLevel: 8,
-    directBonus: 20,
-    timeDeltaMs: -3000,
-    description: '收下会扣除 3 秒，需要先判断剩余时间'
+    directBonus: 12,
+    sealed: true,
+    description: '第一次点击撕开封条，第二次点击才装箱；不会强制等待'
   }),
   time_bonus: Object.freeze({
     id: 'time_bonus',
@@ -47,6 +36,28 @@ const ITEM_RULES = Object.freeze({
     sweep: true,
     description: '收下会把当前同类目标一次装满'
   }),
+  shield: Object.freeze({
+    id: 'shield',
+    name: '护盾',
+    badge: '盾',
+    color: '#46A77A',
+    fill: '#E9F9EF',
+    unlockLevel: 35,
+    directBonus: 18,
+    shield: true,
+    description: '正确收下后抵消下一次普通误触，不影响炸弹'
+  }),
+  wildcard: Object.freeze({
+    id: 'wildcard',
+    name: '万能',
+    badge: '万',
+    color: '#B06ED8',
+    fill: '#F7ECFF',
+    unlockLevel: 55,
+    directBonus: 24,
+    wildcard: true,
+    description: '可放入当前任意一个目标箱，优先帮助最紧急订单'
+  }),
   bomb: Object.freeze({
     id: 'bomb',
     name: '炸弹',
@@ -61,10 +72,11 @@ const ITEM_RULES = Object.freeze({
 });
 
 const ITEM_RULE_LIST = Object.freeze([
-  ITEM_RULES.frozen,
-  ITEM_RULES.drain,
+  ITEM_RULES.sealed,
   ITEM_RULES.time_bonus,
   ITEM_RULES.sweep,
+  ITEM_RULES.shield,
+  ITEM_RULES.wildcard,
   ITEM_RULES.bomb
 ]);
 

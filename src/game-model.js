@@ -26,6 +26,8 @@ class GameModel {
     this.orderRules = (levelConfig.orderRules || []).map((rule) => rule && Object.assign({}, rule));
     this.activeOrderCount = levelConfig.activeOrderCount || ACTIVE_ORDER_COUNT;
     this.shelfShiftEnabled = levelConfig.shelfShiftEnabled !== false;
+    this.sequenceMode = Boolean(levelConfig.sequenceMode);
+    this.strictMistakes = Boolean(levelConfig.strictMistakes);
     this.targetPerBox = levelConfig.targetPerBox || 3;
     this.activeOrders = [];
     this.nextOrderCursor = 0;
@@ -33,6 +35,8 @@ class GameModel {
     this.moves = 0;
     this.combo = 0;
     this.bestCombo = 0;
+    this.comboMilestones = [];
+    this.goldenPackingMs = 0;
     this.score = 0;
     this.itemPointsEarned = 0;
     this.packingCoinsEarned = 0;
@@ -41,6 +45,9 @@ class GameModel {
     this.remainingMs = levelConfig.timeLimitMs || 0;
     this.addedTimeMs = 0;
     this.interactionFrozenMs = 0;
+    this.inputProtectionMs = 0;
+    this.safeHighlightMs = 0;
+    this.safeHighlightStack = -1;
     this.lastAction = null;
     this.rareCollected = [];
     this.collectiblesCollected = [];
@@ -49,6 +56,13 @@ class GameModel {
     this.priorityBonusTotal = 0;
     this.shelfShiftCount = 0;
     this.totalMistakes = 0;
+    this.warningActive = false;
+    this.warningEverConsumed = false;
+    this.warningsCleared = 0;
+    this.waveCount = Math.max(1, Math.floor(Number(levelConfig.waveCount) || 1));
+    this.waveSize = Math.max(1, Math.floor(Number(levelConfig.waveSize) || this.orderQueue.length));
+    this.currentWave = 1;
+    this.checkpointWave = 1;
     this.collectibleTimer = null;
     this.lastCollectibleExpiry = null;
 
@@ -94,7 +108,14 @@ class GameModel {
   }
 
   _findOrder(type) {
-    return this.activeOrders.find((order) => order.type === type && order.count < order.target);
+    const orders = this._getEligibleOrders();
+    return orders.find((order) => order.type === type && order.count < order.target);
+  }
+
+  _getEligibleOrders() {
+    if (!this.sequenceMode) return this.activeOrders;
+    const first = this.activeOrders.find((order) => order.count < order.target);
+    return first ? [first] : [];
   }
 
   _advanceTurnTimers() {
@@ -123,25 +144,25 @@ class GameModel {
   }
 
   _hasPlayableTop() {
-    const activeTypes = new Set(this.activeOrders.map((order) => order.type));
+    const activeTypes = new Set(this._getEligibleOrders().map((order) => order.type));
     return this.stacks.some((stack) => {
       if (!stack.length) return false;
       if (isCollectibleToken(stack[0])) return true;
       const parsed = parseItemToken(stack[0]);
-      return !(parsed.rule && parsed.rule.trap) && activeTypes.has(parsed.type);
+      return !(parsed.rule && parsed.rule.trap) && (activeTypes.has(parsed.type) || Boolean(parsed.rule && parsed.rule.wildcard));
     });
   }
 
   _ensurePlayableTop() {
     if (this.status !== 'playing' || this._hasPlayableTop()) return null;
-    const activeTypes = new Set(this.activeOrders.map((order) => order.type));
+    const activeTypes = new Set(this._getEligibleOrders().map((order) => order.type));
     for (let stackIndex = 0; stackIndex < this.stacks.length; stackIndex += 1) {
       const stack = this.stacks[stackIndex];
       for (let index = 1; index < stack.length; index += 1) {
         const token = stack[index];
         if (isCollectibleToken(token)) continue;
         const parsed = parseItemToken(token);
-        if (parsed.rule && parsed.rule.trap || !activeTypes.has(parsed.type)) continue;
+        if (parsed.rule && parsed.rule.trap || (!activeTypes.has(parsed.type) && !(parsed.rule && parsed.rule.wildcard))) continue;
         stack.splice(index, 1);
         stack.unshift(token);
         return { stackIndex, fromDepth: index };
@@ -200,6 +221,7 @@ class GameModel {
     const completed = [];
     let priorityBonus = 0;
     let shelfShift = 0;
+    let waveCompleted = 0;
     let changed = true;
     while (changed) {
       changed = false;
@@ -220,9 +242,15 @@ class GameModel {
       completed.push(order);
       if (this._shiftShelves()) shelfShift += 1;
       this._appendNextOrder();
+      if (this.waveCount > 1 && this.boxesCompleted < this.orderQueue.length && this.boxesCompleted % this.waveSize === 0) {
+        this.currentWave = Math.min(this.waveCount, Math.floor(this.boxesCompleted / this.waveSize) + 1);
+        this.checkpointWave = this.currentWave;
+        waveCompleted = this.currentWave - 1;
+        this.score += 220;
+      }
       changed = true;
     }
-    return { completed, movedFromBuffer: [], priorityBonus, shelfShift, jamCleared: 0 };
+    return { completed, movedFromBuffer: [], priorityBonus, shelfShift, waveCompleted, jamCleared: 0 };
   }
 
   _consumeSweepTokens(type, limit) {
@@ -247,6 +275,21 @@ class GameModel {
       }
     }
     return removed;
+  }
+
+  _consumeWildcardReplacement(type, excludedStackIndex) {
+    for (let stackIndex = this.stacks.length - 1; stackIndex >= 0; stackIndex -= 1) {
+      const stack = this.stacks[stackIndex];
+      for (let index = stack.length - 1; index >= 0; index -= 1) {
+        if (stackIndex === excludedStackIndex && index === 0) continue;
+        if (isCollectibleToken(stack[index])) continue;
+        const parsed = parseItemToken(stack[index]);
+        if (parsed.type !== type || parsed.rule && parsed.rule.trap) continue;
+        stack.splice(index, 1);
+        return true;
+      }
+    }
+    return false;
   }
 
   _createActionBase(token, parsed, stackIndex) {
@@ -274,14 +317,28 @@ class GameModel {
       clearedCount: 0,
       timeDeltaMs: 0,
       frozenMs: 0,
+      sealBroken: false,
+      warning: false,
+      warningCleared: false,
+      shieldUsed: false,
+      shieldGranted: false,
+      wildcardUsed: false,
+      comboMilestone: 0,
+      goldenPackingMs: 0,
+      safeHighlightStack: -1,
+      waveCompleted: 0,
       ruleBonus: 0,
       ruleEffect: '',
       failureReason: ''
     };
   }
 
-  selectStack(stackIndex) {
+  selectStack(stackIndex, options) {
+    const opts = options || {};
     if (this.status !== 'playing') return { accepted: false, reason: 'not_playing' };
+    if (this.inputProtectionMs > 0) {
+      return { accepted: false, reason: 'protected', remainingMs: this.inputProtectionMs };
+    }
     if (this.interactionFrozenMs > 0) {
       return { accepted: false, reason: 'frozen', remainingMs: this.interactionFrozenMs };
     }
@@ -330,32 +387,101 @@ class GameModel {
       return Object.assign({ accepted: true }, action);
     }
 
-    const order = this._findOrder(parsed.type);
+    const baseOrder = this._findOrder(parsed.type);
+    const wildcardOrder = !baseOrder && parsed.rule && parsed.rule.wildcard
+      ? this._getEligibleOrders().slice().sort((a, b) => {
+        const aRush = a.rule && a.rule.type === 'rush' && !a.rule.expired ? 1 : 0;
+        const bRush = b.rule && b.rule.type === 'rush' && !b.rule.expired ? 1 : 0;
+        return bRush - aRush || (b.count - a.count);
+      })[0]
+      : null;
+    const order = baseOrder || wildcardOrder;
     if (!order) {
-      // 普通点错立即失败，但物件留在原位。玩家复活后仍能选择正确目标，
-      // 不会因为错拿永久丢失保证解所需物件。
       this.moves += 1;
       this.totalMistakes += 1;
       this.combo = 0;
       this.score = Math.max(0, this.score - 5);
-      this.status = 'failed';
-      this.failureReason = 'wrong';
+      if (this.mistakeShield > 0) {
+        this.mistakeShield -= 1;
+        action.shieldUsed = true;
+        action.ruleEffect = '护盾抵消误触';
+        action.status = this.status;
+        this.lastAction = action;
+        return Object.assign({ accepted: true }, action);
+      }
+      if (!this.strictMistakes && !this.warningActive) {
+        const before = this.remainingMs;
+        this.remainingMs = Math.max(0, this.remainingMs - 8000);
+        action.timeDeltaMs = this.remainingMs - before;
+        this.warningActive = true;
+        this.warningEverConsumed = true;
+        action.warning = true;
+        action.ruleEffect = '点错警告 · 时间 -8 秒';
+        if (this.remainingMs === 0) {
+          this.status = 'failed';
+          this.failureReason = 'timeout';
+        }
+      } else {
+        this.status = 'failed';
+        this.failureReason = 'wrong';
+      }
       action.failureReason = this.failureReason;
       action.status = this.status;
       this.lastAction = action;
       return Object.assign({ accepted: true }, action);
     }
 
-    stack.shift();
+    if (parsed.rule && parsed.rule.sealed) {
+      // 封条是主动的两步交互：第一次只拆封，物件仍留在原货架；第二次
+      // 按普通目标收集。它增加观察与操作变化，但不制造强制等待。
+      stack[0] = parsed.type;
+      this.moves += 1;
+      this.score += parsed.rule.directBonus || 0;
+      this.specialMatched += 1;
+      action.special = true;
+      action.sealBroken = true;
+      action.ruleBonus = parsed.rule.directBonus || 0;
+      action.ruleEffect = '封条已拆 · 再点一次装箱';
+      action.status = this.status;
+      this._syncCollectibleTimer(true);
+      this.lastAction = action;
+      return Object.assign({ accepted: true }, action);
+    }
+
+    const wildcardUsedForOther = Boolean(wildcardOrder && wildcardOrder.type !== parsed.type);
+    if (wildcardUsedForOther) {
+      // 万能效果提供一次“虚拟装入”，同时把原物件留作它未来所属订单的
+      // 保证解，避免万能牌挪用未来库存后制造无解尾盘。
+      stack[0] = parsed.type;
+      action.wildcardUsed = true;
+      this._consumeWildcardReplacement(order.type, stackIndex);
+    } else {
+      stack.shift();
+    }
     order.count += 1;
     action.matched = true;
-    this.combo += 1;
+    const comboEligible = opts.comboEligible !== false;
+    if (comboEligible) this.combo += 1;
     this.bestCombo = Math.max(this.bestCombo, this.combo);
     const item = action.item;
     const rule = parsed.rule;
     const itemPoints = Math.max(1, item && item.pointValue || 20);
-    const itemCoins = Math.max(1, item && item.coinValue || 1);
     let clearedCount = 0;
+
+    if (comboEligible && this.combo > 0 && this.combo % 10 === 0) {
+      action.comboMilestone = this.combo;
+      action.goldenPackingMs = 3000;
+      this.comboMilestones.push(this.combo);
+      this.goldenPackingMs = Math.max(this.goldenPackingMs, 3000);
+      this.remainingMs += 3000;
+      this.addedTimeMs += 3000;
+      action.timeDeltaMs += 3000;
+      if (this.warningActive) {
+        this.warningActive = false;
+        this.warningsCleared += 1;
+        action.warningCleared = true;
+      }
+    }
 
     if (rule) {
       this.specialMatched += 1;
@@ -368,7 +494,7 @@ class GameModel {
         const before = this.remainingMs;
         this.remainingMs = Math.max(0, this.remainingMs + rule.timeDeltaMs);
         const actualDelta = this.remainingMs - before;
-        action.timeDeltaMs = actualDelta;
+        action.timeDeltaMs += actualDelta;
         if (actualDelta > 0) this.addedTimeMs += actualDelta;
         action.ruleEffect = actualDelta > 0 ? `时间 +${Math.round(actualDelta / 1000)} 秒` : `时间 ${Math.round(actualDelta / 1000)} 秒`;
       } else if (rule.sweep) {
@@ -377,6 +503,12 @@ class GameModel {
         order.count += clearedCount;
         action.clearedCount = clearedCount;
         action.ruleEffect = `同类一键装满`;
+      } else if (rule.shield) {
+        this.mistakeShield = 1;
+        action.shieldGranted = true;
+        action.ruleEffect = '获得 1 次误触护盾';
+      } else if (rule.wildcard) {
+        action.ruleEffect = `万能货物 → ${order.count}/${order.target}`;
       }
     }
 
@@ -384,14 +516,15 @@ class GameModel {
     const settled = this._settle();
     const collectedCount = 1 + clearedCount;
     action.pointsGained = itemPoints * collectedCount + action.ruleBonus + settled.priorityBonus + settled.completed.length * 30;
-    action.coinsGained = itemCoins * collectedCount + settled.completed.length * 2;
+    // 金币统一在结算页按首通、星级与箱数发放，关内正确点击只积累分数。
+    action.coinsGained = 0;
     this.itemPointsEarned += action.pointsGained;
-    this.packingCoinsEarned += action.coinsGained;
     this.score += itemPoints * collectedCount + Math.min(80, this.combo * 4) + action.ruleBonus;
 
     action.completed = settled.completed;
     action.priorityBonus = settled.priorityBonus;
     action.shelfShift = settled.shelfShift;
+    action.waveCompleted = settled.waveCompleted;
 
     if (this.boxesCompleted >= this.orderQueue.length) {
       this.status = 'won';
@@ -404,6 +537,11 @@ class GameModel {
 
     action.autoRevealed = this._ensurePlayableTop();
     this._syncCollectibleTimer(true);
+    if (comboEligible && this.combo === 6 && this.status === 'playing') {
+      action.safeHighlightStack = this.getHint();
+      this.safeHighlightStack = action.safeHighlightStack;
+      this.safeHighlightMs = action.safeHighlightStack >= 0 ? 1800 : 0;
+    }
     action.failureReason = this.failureReason;
     action.status = this.status;
     this.lastAction = action;
@@ -432,8 +570,9 @@ class GameModel {
 
   getHint() {
     if (this.status !== 'playing' || this.interactionFrozenMs > 0) return -1;
-    const activeTypes = new Set(this.activeOrders.map((order) => order.type));
-    const rushTypes = new Set(this.activeOrders
+    const eligibleOrders = this._getEligibleOrders();
+    const activeTypes = new Set(eligibleOrders.map((order) => order.type));
+    const rushTypes = new Set(eligibleOrders
       .filter((order) => order.rule && order.rule.type === 'rush' && order.rule.remainingMoves > 0)
       .map((order) => order.type));
     const rare = [];
@@ -448,7 +587,7 @@ class GameModel {
       }
       const parsed = parseItemToken(stack[0]);
       if (parsed.rule && parsed.rule.trap) return;
-      if (!activeTypes.has(parsed.type)) return;
+      if (!activeTypes.has(parsed.type) && !(parsed.rule && parsed.rule.wildcard)) return;
       if (rushTypes.has(parsed.type)) rush.push(index);
       else if (parsed.rule) special.push(index);
       else direct.push(index);
@@ -458,6 +597,22 @@ class GameModel {
     if (special.length) return special[0];
     if (direct.length) return direct[0];
     return -1;
+  }
+
+  getHints(count) {
+    const wanted = Math.max(1, Math.floor(Number(count) || 1));
+    const eligibleTypes = new Set(this._getEligibleOrders().map((order) => order.type));
+    const candidates = [];
+    this.stacks.forEach((stack, index) => {
+      if (!stack.length) return;
+      if (isCollectibleToken(stack[0])) {
+        candidates.unshift(index);
+        return;
+      }
+      const parsed = parseItemToken(stack[0]);
+      if (!(parsed.rule && parsed.rule.trap) && (eligibleTypes.has(parsed.type) || Boolean(parsed.rule && parsed.rule.wildcard))) candidates.push(index);
+    });
+    return candidates.slice(0, wanted);
   }
 
   shuffleVisible() {
@@ -474,27 +629,36 @@ class GameModel {
     const rng = new RNG((this.seed + this.moves * 7919 + 17) >>> 0);
     rng.shuffle(tops);
     indices.forEach((stackIndex, index) => { this.stacks[stackIndex][0] = tops[index]; });
-    this.combo = 0;
     this._ensurePlayableTop();
     this._syncCollectibleTimer(true);
     return true;
   }
 
-  autoPack() {
+  autoPack(options) {
     if (this.status !== 'playing') return [];
+    const opts = options || {};
+    const maxItems = Math.max(1, Math.floor(Number(opts.maxItems) || 4));
+    const stopAfterBox = Boolean(opts.stopAfterBox);
+    const comboBefore = this.combo;
     const results = [];
-    for (let step = 0; step < 4 && this.status === 'playing'; step += 1) {
+    for (let step = 0; step < maxItems && this.status === 'playing'; step += 1) {
       const hint = this.stacks.findIndex((stack) => {
         if (!stack.length || isCollectibleToken(stack[0])) return false;
         const parsed = parseItemToken(stack[0]);
-        return !(parsed.rule && parsed.rule.trap) && Boolean(this._findOrder(parsed.type));
+        return !(parsed.rule && parsed.rule.trap) && Boolean(parsed.rule && parsed.rule.wildcard || this._findOrder(parsed.type));
       });
       if (hint < 0) break;
-      const result = this.selectStack(hint);
+      const result = this.selectStack(hint, { comboEligible: false });
       if (!result.accepted) break;
       results.push(result);
-      if (result.completed.length || this.interactionFrozenMs > 0) break;
+      if (result.sealBroken) {
+        step -= 1;
+        continue;
+      }
+      if (stopAfterBox && result.completed.length) break;
+      if (this.interactionFrozenMs > 0) break;
     }
+    this.combo = comboBefore;
     return results;
   }
 
@@ -502,12 +666,17 @@ class GameModel {
     if (this.status !== 'failed' || this.revived) return false;
     this.revived = true;
     const before = this.remainingMs;
-    this.remainingMs = Math.max(15000, this.remainingMs);
+    this.remainingMs = Math.max(20000, this.remainingMs);
     this.addedTimeMs += this.remainingMs - before;
     this.interactionFrozenMs = 0;
+    this.goldenPackingMs = 0;
+    this.warningActive = false;
+    this.inputProtectionMs = 600;
     this.status = 'playing';
     this.failureReason = '';
     this.combo = 0;
+    this.safeHighlightStack = this.getHint();
+    this.safeHighlightMs = this.safeHighlightStack >= 0 ? 2400 : 0;
     return true;
   }
 
@@ -532,30 +701,61 @@ class GameModel {
     return Math.max(0, this.interactionFrozenMs || 0);
   }
 
+  getGoldenPackingMs() {
+    return Math.max(0, this.goldenPackingMs || 0);
+  }
+
+  getSafeHighlightStack() {
+    return this.safeHighlightMs > 0 ? this.safeHighlightStack : -1;
+  }
+
   tick(deltaMs, options) {
     if (this.status !== 'playing') return null;
     const opts = options || {};
     const delta = Math.max(0, Number(deltaMs) || 0);
-    const events = { collectibleAppeared: false, collectibleExpired: null, levelExpired: false, frozenEnded: false };
+    const events = {
+      collectibleAppeared: false,
+      collectibleExpired: null,
+      levelExpired: false,
+      frozenEnded: false,
+      goldenEnded: false,
+      protectionEnded: false
+    };
     const hadTimer = Boolean(this.collectibleTimer);
     this._syncCollectibleTimer(Boolean(opts.allowCollectibleStart));
     if (!hadTimer && this.collectibleTimer) events.collectibleAppeared = true;
 
-    // 闪耀藏品和冻结窗口都使用真实时间；暂停只影响关卡主倒计时。
-    if (this.collectibleTimer) {
+    // 所有玩法计时都服从暂停、切后台与广告遮罩，玩家不会因认真阅读或看
+    // 广告而丢失藏品或遭受隐藏惩罚。
+    if (!opts.pauseLevelTimer && this.collectibleTimer) {
       this.collectibleTimer.remainingMs = Math.max(0, this.collectibleTimer.remainingMs - delta);
       if (this.collectibleTimer.remainingMs === 0) events.collectibleExpired = this._expireCollectible();
     }
-    if (this.interactionFrozenMs > 0) {
+    if (!opts.pauseLevelTimer && this.interactionFrozenMs > 0) {
       const before = this.interactionFrozenMs;
       this.interactionFrozenMs = Math.max(0, this.interactionFrozenMs - delta);
       events.frozenEnded = before > 0 && this.interactionFrozenMs === 0;
     }
 
     if (!opts.pauseLevelTimer) {
-      this.elapsedMs += delta;
+      if (this.inputProtectionMs > 0) {
+        const before = this.inputProtectionMs;
+        this.inputProtectionMs = Math.max(0, this.inputProtectionMs - delta);
+        events.protectionEnded = before > 0 && this.inputProtectionMs === 0;
+      }
+      if (this.safeHighlightMs > 0) {
+        this.safeHighlightMs = Math.max(0, this.safeHighlightMs - delta);
+        if (this.safeHighlightMs === 0) this.safeHighlightStack = -1;
+      }
+      const goldenConsumed = Math.min(delta, this.goldenPackingMs);
+      if (goldenConsumed > 0) {
+        this.goldenPackingMs -= goldenConsumed;
+        events.goldenEnded = this.goldenPackingMs === 0;
+      }
+      const countdownDelta = Math.max(0, delta - goldenConsumed);
+      this.elapsedMs += countdownDelta;
       if (this.remainingMs > 0) {
-        this.remainingMs = Math.max(0, this.remainingMs - delta);
+        this.remainingMs = Math.max(0, this.remainingMs - countdownDelta);
         if (this.remainingMs === 0 && this.status === 'playing') {
           this.status = 'failed';
           this.failureReason = 'timeout';
@@ -570,8 +770,8 @@ class GameModel {
     if (this.status !== 'won') return 0;
     const totalTime = Math.max(1, (this.config.timeLimitMs || 1) + this.addedTimeMs);
     const ratio = this.remainingMs / totalTime;
-    if (!this.revived && this.totalMistakes === 0 && ratio >= 0.24) return 3;
-    if (ratio >= 0.07) return 2;
+    if (!this.revived && !this.warningEverConsumed && ratio >= 0.25) return 3;
+    if (ratio >= 0.10) return 2;
     return 1;
   }
 
@@ -602,6 +802,7 @@ class GameModel {
       boxesCompleted: this.boxesCompleted,
       boxTotal: this.orderQueue.length,
       bestCombo: this.bestCombo,
+      comboMilestones: this.comboMilestones.slice(),
       rareCollected: this.rareCollected.slice(),
       collectiblesCollected: this.collectiblesCollected.slice(),
       specialMatched: this.specialMatched,
@@ -609,6 +810,12 @@ class GameModel {
       priorityBonusTotal: this.priorityBonusTotal,
       shelfShiftCount: this.shelfShiftCount,
       totalMistakes: this.totalMistakes,
+      warningActive: this.warningActive,
+      warningEverConsumed: this.warningEverConsumed,
+      warningsCleared: this.warningsCleared,
+      currentWave: this.currentWave,
+      waveCount: this.waveCount,
+      checkpointWave: this.checkpointWave,
       jamSlots: 0,
       jamSlotsCreated: 0,
       jamSlotsCleared: 0,

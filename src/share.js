@@ -142,9 +142,9 @@ function createTitle(context, channel, variantIndex) {
 
   if (ctx.daily) {
     return pickTitle([
-      `今日同一题，我装满了 ${ctx.boxesCompleted || 0}箱。首胜还有 60 金币，等你来交卷。`,
+      `今日同一题，我装满了 ${ctx.boxesCompleted || 0}箱。首胜还有 25 金币，等你来交卷。`,
       `今天的货架已经洗牌，每个人面对同一局。我的成绩在这里，你会怎么点？`,
-      `一天只亮一次的挑战入口：同题、限时、首胜 60 金币。来看看谁更稳。`
+      `一天只亮一次的挑战入口：同题、限时、首胜 25 金币。来看看谁更稳。`
     ], index);
   }
 

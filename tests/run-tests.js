@@ -11,9 +11,11 @@ const {
   getUnlockedItems
 } = require('../src/catalog');
 const CONFIG = require('../src/config');
+const { AdManager } = require('../src/ads');
 const {
   AD_COIN_DAILY_LIMIT,
   AD_COIN_REWARD,
+  BOOSTER_COIN_COSTS,
   BOOSTER_VOUCHER_COSTS,
   PAUSE_TICKET_STORE_COST,
   REVIVE_COIN_COST,
@@ -28,11 +30,12 @@ const { createSpecialToken } = require('../src/item-rules');
 const { generateLevel, getTimeLimitMs, removeRareFruitFromLevel } = require('../src/level-generator');
 const {
   MECHANIC_TUTORIALS,
+  getDifficultyBudget,
   getCollectionTargetMechanic,
   getMechanicForLevel
 } = require('../src/mechanics');
 const { RARE_FRUIT_MAP, RARE_FRUITS, createRareToken, getFruitMastery } = require('../src/rare-fruits');
-const { getVisibleBoosterActions, normalizeFontWeight } = require('../src/renderer');
+const { getContainedRect, getMovementState, getVisibleBoosterActions, normalizeFontWeight } = require('../src/renderer');
 const { getJourneyInfo, getPointRank, getTotalPoints } = require('../src/progression');
 const { createQuery, createTitle, parseChallenge, parseFruitShopEntry } = require('../src/share');
 const { Storage } = require('../src/storage');
@@ -71,7 +74,7 @@ function solveGeneratedLevel(config) {
     assert(hint >= 0, `第 ${guard} 步没有安全目标`);
     const result = model.selectStack(hint);
     assert.strictEqual(result.accepted, true, `第 ${guard} 步未被接受`);
-    assert(result.matched || result.collectible, `第 ${guard} 步未命中目标`);
+    assert(result.matched || result.collectible || result.sealBroken, `第 ${guard} 步未命中目标`);
     assert.strictEqual(model.getBufferUsage(), 0, `第 ${guard} 步不应产生旧暂存数据`);
   }
   assert(guard < 4000, '提示求解超过安全步数');
@@ -114,7 +117,8 @@ test('第 500、1000、5000 关仍能稳定生成并按保证解通关', () => {
     const config = generateLevel(level);
     const model = solveGeneratedLevel(config);
     assert.strictEqual(model.level, level);
-    assert.strictEqual(config.orderQueue.length, 16);
+    assert.strictEqual(config.orderQueue.length, 12);
+    assert.strictEqual(config.waveCount, 3);
     assert.strictEqual(config.stackCount, 7);
   });
 });
@@ -291,13 +295,13 @@ test('未收藏优先与连续未掉落保底会指向仍缺少的近期开锁�
   assert.strictEqual(picked.id, missing.id);
 });
 
-test('目标数在第 1、2、15 关分三步增加，每日挑战直接使用 3 个目标', () => {
+test('目标数在第 1、2、10 关分三步增加，每日挑战直接使用 3 个目标', () => {
   assert.strictEqual(generateLevel(1).activeOrderCount, 1);
-  [2, 3, 10, 14].forEach((level) => assert.strictEqual(generateLevel(level).activeOrderCount, 2));
-  [15, 31, 99].forEach((level) => assert.strictEqual(generateLevel(level).activeOrderCount, 3));
+  [2, 3, 9].forEach((level) => assert.strictEqual(generateLevel(level).activeOrderCount, 2));
+  [10, 15, 31, 99].forEach((level) => assert.strictEqual(generateLevel(level).activeOrderCount, 3));
   assert.strictEqual(generateLevel(24, { daily: true }).activeOrderCount, 3);
   assert.strictEqual(new GameModel(generateLevel(1)).activeOrders.length, 1);
-  assert.strictEqual(new GameModel(generateLevel(15)).activeOrders.length, 3);
+  assert.strictEqual(new GameModel(generateLevel(10)).activeOrders.length, 3);
 });
 
 test('渐进教学节点唯一，并只在对应关卡首次展示', () => {
@@ -330,15 +334,19 @@ test('机制首次出现与实际关卡配置一致，不会只弹教学却没�
   assert.strictEqual(generateLevel(3).shelfShiftEnabled, true);
   assert.strictEqual(generateLevel(4, { collection: {} }).collectibleId, getThemeCollectibles('fruit')[0].id);
   assert.strictEqual(new GameModel(generateLevel(4)).getMistakeThreshold(), 0);
-  assert(generateLevel(6, { disableCollectible: true })._solutionTypes.some((token) => token.indexOf('special:frozen:') === 0));
-  assert(generateLevel(8, { disableCollectible: true })._solutionTypes.some((token) => token.indexOf('special:drain:') === 0));
+  assert(generateLevel(6, { disableCollectible: true })._solutionTypes.some((token) => token.indexOf('special:sealed:') === 0));
   assert(generateLevel(10, { disableCollectible: true })._solutionTypes.some((token) => token.indexOf('special:time_bonus:') === 0));
   assert(generateLevel(12, { disableCollectible: true })._solutionTypes.some((token) => token.indexOf('special:sweep:') === 0));
   assert(generateLevel(18, { disableCollectible: true }).stacks.some((stack) => (
     stack.some((token) => token.indexOf('special:bomb:') === 0)
   )));
-  const level22 = generateLevel(22, { disableCollectible: true });
-  assert(level22.orderRules.slice(0, level22.activeOrderCount).some((rule) => rule && rule.type === 'rush'));
+  assert(generateLevel(35, { disableCollectible: true })._solutionTypes.some((token) => token.indexOf('special:shield:') === 0));
+  assert(generateLevel(55, { disableCollectible: true })._solutionTypes.some((token) => token.indexOf('special:wildcard:') === 0));
+  const level15 = generateLevel(15, { disableCollectible: true });
+  assert(level15.orderRules.slice(0, level15.activeOrderCount).some((rule) => rule && rule.type === 'rush'));
+  assert.strictEqual(generateLevel(40, { disableCollectible: true }).movement.type, 'lane_swap');
+  assert.strictEqual(generateLevel(50, { disableCollectible: true }).sequenceMode, true);
+  assert.strictEqual(generateLevel(60, { disableCollectible: true }).movement.type, 'carousel');
   [1, 4, 24, 99].forEach((level) => assert.strictEqual(generateLevel(level).bufferCapacity, 0));
 });
 
@@ -400,25 +408,27 @@ test('领取后的同一关重开不会重复刷稀有水果', () => {
   assert.strictEqual(config.stacks.some((stack) => stack.includes(createRareToken('moon_grapes'))), false);
 });
 
-test('难度参数按关卡上升并保持上限', () => {
+test('普通关保持 2–10 箱短局，每十关使用 12 箱三波大订单', () => {
   const level1 = generateLevel(1);
   const level20 = generateLevel(20);
   const level99 = generateLevel(99);
   assert.strictEqual(level1.orderQueue.length, 2);
   assert(level20.orderQueue.length > level1.orderQueue.length);
-  assert.strictEqual(level99.orderQueue.length, 16);
+  assert.strictEqual(level99.orderQueue.length, 10);
+  assert.strictEqual(level20.orderQueue.length, 12);
+  assert.strictEqual(level20.waveCount, 3);
   assert(level20.stackCount >= level1.stackCount);
   assert.strictEqual(level99.stackCount, 7);
   assert.strictEqual(level99.bufferCapacity, 0);
   assert(level1.timeLimitMs > 0);
   assert(level99.timeLimitMs > level1.timeLimitMs);
-  assert(level99.timeLimitMs <= 118000);
+  assert(level99.timeLimitMs <= 75000);
 });
 
 test('所有关卡都有合理倒计时，加时与超时失败规则生效', () => {
   [1, 2, 10, 60, 5000].forEach((level) => {
     const config = generateLevel(level);
-    assert(config.timeLimitMs >= 48000 && config.timeLimitMs <= 118000);
+    assert(config.timeLimitMs >= 25000 && config.timeLimitMs <= 90000);
     assert.strictEqual(config.timeLimitMs, getTimeLimitMs(level, false, config.orderQueue.length, config.stackCount));
   });
   const model = new GameModel({
@@ -435,7 +445,7 @@ test('所有关卡都有合理倒计时，加时与超时失败规则生效', ()
   assert.strictEqual(model.status, 'failed');
   assert.strictEqual(model.getResult().failureReason, 'timeout');
   assert.strictEqual(model.revive(), true);
-  assert.strictEqual(model.remainingMs, 15000);
+  assert.strictEqual(model.remainingMs, 20000);
 });
 
 test('第 1 关三步光圈引导暂停关卡计时，完成教学后恢复计时', () => {
@@ -471,7 +481,7 @@ test('第 1 关三步光圈引导暂停关卡计时，完成教学后恢复计�
   assert.strictEqual(tickOptions[1].allowCollectibleStart, true);
 });
 
-test('闪耀藏品到顶层才启动 6 秒，暂停只停关卡时间而不停藏品时间', () => {
+test('闪耀藏品到顶层才启动 6 秒，暂停同时停住关卡与藏品时间', () => {
   const collectible = getThemeCollectibles('fruit')[0];
   const model = new GameModel({
     themeId: 'fruit', level: 4, seed: 10, daily: false, activeOrderCount: 1,
@@ -482,14 +492,16 @@ test('闪耀藏品到顶层才启动 6 秒，暂停只停关卡时间而不停�
   const first = model.tick(1000, { pauseLevelTimer: true, allowCollectibleStart: true });
   assert.strictEqual(first.collectibleAppeared, true);
   assert.strictEqual(model.remainingMs, 30000);
-  assert.strictEqual(model.getActiveCollectibleTimer().remainingMs, 5000);
-  const expired = model.tick(5000, { pauseLevelTimer: true, allowCollectibleStart: false });
+  assert.strictEqual(model.getActiveCollectibleTimer().remainingMs, 6000);
+  model.tick(5000, { pauseLevelTimer: true, allowCollectibleStart: false });
+  assert.strictEqual(model.getActiveCollectibleTimer().remainingMs, 6000);
+  const expired = model.tick(6000, { pauseLevelTimer: false, allowCollectibleStart: false });
   assert.strictEqual(expired.collectibleExpired.id, collectible.id);
-  assert.strictEqual(model.remainingMs, 30000);
+  assert.strictEqual(model.remainingMs, 24000);
   assert.strictEqual(model.stacks.some((stack) => stack.includes(createCollectibleToken(collectible.id))), false);
 });
 
-test('正确物件按品类产生不同积分和金币，错拿不产出', () => {
+test('正确物件按品类产生不同分数，关内不再即时产金币', () => {
   const model = new GameModel({
     themeId: 'fruit', level: 8, seed: 19, daily: false, activeOrderCount: 2,
     targetPerBox: 3, bufferCapacity: 3, timeLimitMs: 60000,
@@ -498,14 +510,15 @@ test('正确物件按品类产生不同积分和金币，错拿不产出', () =>
   const apple = model.selectStack(0);
   const pineapple = model.selectStack(1);
   const wrong = model.selectStack(2);
-  assert(apple.pointsGained > 0 && apple.coinsGained > 0);
+  assert(apple.pointsGained > 0);
+  assert.strictEqual(apple.coinsGained, 0);
   assert(pineapple.pointsGained > apple.pointsGained);
-  assert(pineapple.coinsGained > apple.coinsGained);
+  assert.strictEqual(pineapple.coinsGained, 0);
   assert.strictEqual(wrong.pointsGained, 0);
   assert.strictEqual(wrong.coinsGained, 0);
 });
 
-test('收藏进度永久保留，购买暂停补给只扣当前金币', () => {
+test('关内积分可永久记录但不会带入金币，暂停永久免费', () => {
   let persisted = null;
   const storage = new Storage({
     getStorageSync() { return persisted; },
@@ -513,31 +526,33 @@ test('收藏进度永久保留，购买暂停补给只扣当前金币', () => {
   });
   const credited = storage.creditMatchedItem(50, 5);
   assert.strictEqual(credited.points, 50);
+  assert.strictEqual(credited.coins, 0);
   assert.strictEqual(getTotalPoints(storage.data), 50);
   const coinsBefore = storage.data.coins;
   const bought = storage.buyPauseTickets(1);
-  assert.strictEqual(bought.bought, true);
-  assert.strictEqual(storage.data.coins, coinsBefore - PAUSE_TICKET_STORE_COST);
+  assert.strictEqual(bought.bought, false);
+  assert.strictEqual(bought.reason, 'free_pause');
+  assert.strictEqual(storage.data.coins, coinsBefore);
   assert.strictEqual(Object.prototype.hasOwnProperty.call(storage.data, 'lifetimeCoins'), false);
   assert.strictEqual(getTotalPoints(storage.data), 50);
 });
 
-test('今日挑战每天首胜额外获得 60 金币，重复通关不重复领取', () => {
+test('今日挑战每天首胜额外获得 25 金币，重复通关不重复领取', () => {
   const storage = new Storage({ getStorageSync() { return null; }, setStorageSync() {} });
   const before = storage.data.coins;
   const first = storage.recordResult({
     level: 24, themeId: 'fruit', daily: true, status: 'won', stars: 3,
     score: 2200, boxesCompleted: 10, packingCoinsEarned: 18
   });
-  assert.strictEqual(first.dailyBonusCoins, 60);
-  assert.strictEqual(first.earnedCoins, 78);
-  assert.strictEqual(storage.data.coins, before + 60);
+  assert.strictEqual(first.dailyBonusCoins, 25);
+  assert.strictEqual(first.earnedCoins, 25);
+  assert.strictEqual(storage.data.coins, before + 25);
   const replay = storage.recordResult({
     level: 24, themeId: 'fruit', daily: true, status: 'won', stars: 3,
     score: 2400, boxesCompleted: 10, packingCoinsEarned: 20
   });
   assert.strictEqual(replay.dailyBonusCoins, 0);
-  assert.strictEqual(storage.data.coins, before + 60);
+  assert.strictEqual(storage.data.coins, before + 25);
 });
 
 test('藏品出售只减少持有量，永久图鉴与累计积分不会倒退', () => {
@@ -549,7 +564,7 @@ test('藏品出售只减少持有量，永久图鉴与累计积分不会倒退',
   const pointsBefore = getTotalPoints(storage.data);
   const coinsBefore = storage.data.coins;
   assert.strictEqual(storage.data.rareFruits[collectible.id].owned, 2);
-  assert.strictEqual(getCollectionValue(storage.data.rareFruits), value * 2);
+  assert.strictEqual(getCollectionValue(storage.data.rareFruits), value);
   const firstSale = storage.sellCollectible(collectible.id, 1);
   assert.strictEqual(firstSale.sold, true);
   assert.strictEqual(firstSale.coins, value);
@@ -557,8 +572,9 @@ test('藏品出售只减少持有量，永久图鉴与累计积分不会倒退',
   assert.strictEqual(storage.data.rareFruits[collectible.id].count, 2);
   assert.strictEqual(storage.data.coins, coinsBefore + value);
   assert.strictEqual(getTotalPoints(storage.data), pointsBefore);
-  storage.sellCollectible(collectible.id, 1);
-  assert.strictEqual(storage.data.rareFruits[collectible.id].owned, 0);
+  const protectedSale = storage.sellCollectible(collectible.id, 1);
+  assert.strictEqual(protectedSale.sold, false);
+  assert.strictEqual(storage.data.rareFruits[collectible.id].owned, 1);
   assert.strictEqual(countDiscoveredCollectibles(storage.data.rareFruits, 'fruit'), 1);
 });
 
@@ -579,18 +595,17 @@ test('智能兑换优先使用重复藏品，道具券可提前购买并在关�
   assert.strictEqual(storage.getBoosterVoucherCount('hint'), 1);
   assert.strictEqual(storage.consumeBoosterVoucher('hint'), true);
   assert.strictEqual(storage.getBoosterVoucherCount('hint'), 0);
-  assert.strictEqual(REVIVE_COIN_COST, 180);
+  assert.strictEqual(REVIVE_COIN_COST, 600);
 });
 
 test('补给商店支持批量购买并严格校验金币与持有上限', () => {
   const storage = new Storage({ getStorageSync() { return null; }, setStorageSync() {} });
   storage.addCoins(2000);
   const coinsBefore = storage.data.coins;
-  const pauses = storage.buyStoreProduct('pause_ticket', 3);
-  assert.strictEqual(pauses.bought, true);
-  assert.strictEqual(pauses.quantity, 3);
-  assert.strictEqual(storage.getPauseTicketCount(), 5);
-  assert.strictEqual(storage.data.coins, coinsBefore - PAUSE_TICKET_STORE_COST * 3);
+  const rescue = storage.buyStoreProduct('rescue_ticket', 2);
+  assert.strictEqual(rescue.bought, true);
+  assert.strictEqual(rescue.quantity, 2);
+  assert.strictEqual(storage.data.rescueTickets, 3);
 
   const hints = storage.buyStoreProduct('voucher_hint', 4);
   assert.strictEqual(hints.bought, true);
@@ -604,31 +619,29 @@ test('补给商店支持批量购买并严格校验金币与持有上限', () =>
   assert.strictEqual(insufficient.reason, 'coins');
 });
 
-test('每关首次暂停免费，后续暂停会消耗暂停券', () => {
+test('暂停不限次数且不消耗金币或票券', () => {
   const storage = new Storage({ getStorageSync() { return null; }, setStorageSync() {} });
   const app = Object.create(GameApp.prototype);
   const toasts = [];
   Object.assign(app, {
     model: { status: 'playing', level: 9 },
     storage,
-    view: { overlay: null, freePausesRemaining: 1 },
+    view: { overlay: null },
     renderer: { showToast(message) { toasts.push(message); } },
     analytics: { report() {} }
   });
   const ticketsBefore = storage.getPauseTicketCount();
   assert.strictEqual(app._pauseLevel(), true);
-  assert.strictEqual(app.view.freePausesRemaining, 0);
   assert.strictEqual(storage.getPauseTicketCount(), ticketsBefore);
   app.view.overlay = null;
   assert.strictEqual(app._pauseLevel(), true);
-  assert.strictEqual(storage.getPauseTicketCount(), ticketsBefore - 1);
-  storage.data.pauseTickets = 0;
+  assert.strictEqual(storage.getPauseTicketCount(), ticketsBefore);
   app.view.overlay = null;
-  assert.strictEqual(app._pauseLevel(), false);
-  assert(toasts.some((message) => message.includes('暂停次数已用完')));
+  assert.strictEqual(app._pauseLevel(), true);
+  assert.strictEqual(toasts.length, 0);
 });
 
-test('广告金币每天最多领取 3 次，跨日自动重置次数', () => {
+test('广告金币每天最多领取 2 次，跨日自动重置次数', () => {
   const storage = new Storage({ getStorageSync() { return null; }, setStorageSync() {} });
   const firstDay = new Date(2026, 6, 26, 12, 0, 0);
   const nextDay = new Date(2026, 6, 27, 12, 0, 0);
@@ -668,7 +681,7 @@ test('藏馆只展示已开启主题和紧随其后的一个锁定主题', () =>
   assert.strictEqual(getVisibleThemes(THEMES.map((theme) => theme.id)).length, 10);
 });
 
-test('好友榜只写入当前金币与藏品数，消费后排名数值同步下降', () => {
+test('好友榜写入永久总成绩与藏品数，消费金币不会让排名倒退', () => {
   let written = null;
   const manager = new FriendRankManager({
     getOpenDataContext() { return null; },
@@ -676,10 +689,12 @@ test('好友榜只写入当前金币与藏品数，消费后排名数值同步�
   });
   manager.sync({
     coins: 276,
+    adventurePoints: 900,
+    collectionPoints: 100,
     rareFruits: { starlight_strawberry: { count: 2 } }
   });
   assert.deepStrictEqual(written, [
-    { key: 'coins', value: '276' },
+    { key: 'total_points', value: '1000' },
     { key: 'collection_count', value: '1' }
   ]);
 });
@@ -711,6 +726,35 @@ test('好友榜遇到只读开放数据画布时仍会发送展示消息', () =>
   ]);
 });
 
+test('好友榜同步真实展示尺寸并始终等比绘制文字', () => {
+  const messages = [];
+  const canvas = { width: 300, height: 150 };
+  const manager = new FriendRankManager({
+    getOpenDataContext() {
+      return {
+        canvas,
+        postMessage(message) { messages.push(message); }
+      };
+    }
+  });
+  assert.strictEqual(manager.show('total_points', 614, 1088), canvas);
+  assert.strictEqual(canvas.width, 614);
+  assert.strictEqual(canvas.height, 1088);
+  assert.deepStrictEqual(messages[0], {
+    type: 'show_rank', metric: 'total_points', width: 614, height: 1088
+  });
+
+  const legacy = getContainedRect(654, 820, 68, 220, 614, 1088);
+  assert(Math.abs(legacy.width / legacy.height - 654 / 820) < 1e-9, '旧画布也必须保持宽高比');
+  assert(legacy.width <= 614 && legacy.height <= 1088);
+  const matched = getContainedRect(614, 1088, 68, 220, 614, 1088);
+  assert.deepStrictEqual(matched, { x: 68, y: 220, width: 614, height: 1088 });
+
+  const app = Object.create(GameApp.prototype);
+  app.renderer = { getFriendRankViewport() { return { viewportWidth: 614, viewportHeight: 1088 }; } };
+  assert.deepStrictEqual(app._getFriendRankViewportSize(), { width: 614, height: 1088 });
+});
+
 test('藏馆连续翻页会在主题边界自然切换，反向滑动回到上一主题末页', () => {
   const app = {
     view: { collectionThemeId: 'fruit', fruitShopPage: Math.ceil(getThemeCollectibles('fruit').length / 6) - 1, fruitShopShareImage: '' },
@@ -726,7 +770,7 @@ test('藏馆连续翻页会在主题边界自然切换，反向滑动回到上�
   assert.strictEqual(app.view.fruitShopPage, Math.ceil(getThemeCollectibles('fruit').length / 6) - 1);
 });
 
-test('普通物件点错立即失败，物件保留且每局只允许复活一次', () => {
+test('普通物件首错扣 8 秒并警告，再错失败且每局只允许复活一次', () => {
   const model = new GameModel({
     level: 8,
     seed: 12,
@@ -740,45 +784,40 @@ test('普通物件点错立即失败，物件保留且每局只允许复活一�
   const wrong = model.selectStack(0);
   assert.strictEqual(wrong.accepted, true);
   assert.strictEqual(wrong.matched, false);
-  assert.strictEqual(wrong.failureReason, 'wrong');
-  assert.strictEqual(model.status, 'failed');
+  assert.strictEqual(wrong.warning, true);
+  assert.strictEqual(model.remainingMs, 52000);
+  assert.strictEqual(model.status, 'playing');
   assert.strictEqual(model.stacks[0][0], 'bread', '点错物件必须留在原位，复活后仍可重新判断');
   assert.strictEqual(model.getBufferUsage(), 0);
+  const second = model.selectStack(0);
+  assert.strictEqual(second.failureReason, 'wrong');
+  assert.strictEqual(model.status, 'failed');
   assert.strictEqual(model.revive(), true);
   assert.strictEqual(model.status, 'playing');
+  assert.strictEqual(model.remainingMs, 52000);
+  assert.strictEqual(model.warningActive, false);
   model.status = 'failed';
   assert.strictEqual(model.revive(), false);
 });
 
 test('无脑乱点无法稳定通关，难度会在前几关迅速建立', () => {
-  assert(randomClickWinRate(1, 300) < 0.5);
-  assert(randomClickWinRate(2, 300) < 0.5);
-  assert(randomClickWinRate(5, 300) < 0.05);
+  assert(randomClickWinRate(1, 300) < 0.65);
+  assert(randomClickWinRate(2, 300) < 0.65);
+  assert(randomClickWinRate(5, 300) < 0.12);
   assert(randomClickWinRate(10, 300) < 0.01);
 });
 
-test('冻、耗、+、清四种目标物件规则按说明生效', () => {
-  const frozen = new GameModel({
+test('封条、加时、清除与护盾规则都提供主动反馈而不强制等待扣时', () => {
+  const sealed = new GameModel({
     themeId: 'fruit', level: 6, seed: 1, daily: false, activeOrderCount: 1,
     targetPerBox: 3, timeLimitMs: 30000,
-    orderQueue: ['apple'], stacks: [[createSpecialToken('apple', 'frozen')], ['apple']]
+    orderQueue: ['apple'], stacks: [[createSpecialToken('apple', 'sealed')], ['apple'], ['apple']]
   });
-  const frozenResult = frozen.selectStack(0);
-  assert.strictEqual(frozenResult.matched, true);
-  assert.strictEqual(frozenResult.frozenMs, 1500);
-  assert.strictEqual(frozen.selectStack(1).reason, 'frozen');
-  const thawed = frozen.tick(1500, { pauseLevelTimer: false, allowCollectibleStart: true });
-  assert.strictEqual(thawed.frozenEnded, true);
-  assert.strictEqual(frozen.getInteractionFrozenMs(), 0);
-
-  const drain = new GameModel({
-    themeId: 'fruit', level: 8, seed: 2, daily: false, activeOrderCount: 1,
-    targetPerBox: 3, timeLimitMs: 10000,
-    orderQueue: ['apple'], stacks: [[createSpecialToken('apple', 'drain')]]
-  });
-  const drainResult = drain.selectStack(0);
-  assert.strictEqual(drainResult.timeDeltaMs, -3000);
-  assert.strictEqual(drain.remainingMs, 7000);
+  const sealResult = sealed.selectStack(0);
+  assert.strictEqual(sealResult.sealBroken, true);
+  assert.strictEqual(sealed.stacks[0][0], 'apple');
+  assert.strictEqual(sealed.getInteractionFrozenMs(), 0);
+  assert.strictEqual(sealed.selectStack(0).matched, true);
 
   const bonus = new GameModel({
     themeId: 'fruit', level: 10, seed: 3, daily: false, activeOrderCount: 1,
@@ -800,6 +839,17 @@ test('冻、耗、+、清四种目标物件规则按说明生效', () => {
   assert.strictEqual(sweepResult.completed.length, 1);
   assert.strictEqual(sweep.status, 'won');
   assert.strictEqual(sweep.getRemainingTileCount(), 0);
+
+  const shield = new GameModel({
+    themeId: 'fruit', level: 35, seed: 5, daily: false, activeOrderCount: 1,
+    targetPerBox: 3, timeLimitMs: 30000, orderQueue: ['apple'],
+    stacks: [[createSpecialToken('apple', 'shield')], ['bread']]
+  });
+  assert.strictEqual(shield.selectStack(0).shieldGranted, true);
+  const protectedWrong = shield.selectStack(1);
+  assert.strictEqual(protectedWrong.shieldUsed, true);
+  assert.strictEqual(shield.status, 'playing');
+  assert.strictEqual(shield.remainingMs, 30000);
 });
 
 test('炸弹点击后立即失败并移除，复活后不会再次触发', () => {
@@ -879,13 +929,13 @@ test('进度存档只补发新增星星并正确解锁下一关', () => {
   });
   assert.strictEqual(storage.data.highestLevel, 2);
   assert.strictEqual(storage.data.totalStars, 2);
-  assert.strictEqual(storage.data.coins, 140);
+  assert.strictEqual(storage.data.coins, 115);
   storage.recordResult({
     level: 1, daily: false, status: 'won', stars: 3, score: 1000,
     maxBufferUsed: 2, boxesCompleted: 3
   });
   assert.strictEqual(storage.data.totalStars, 3);
-  assert.strictEqual(storage.data.coins, 190);
+  assert.strictEqual(storage.data.coins, 119);
   assert.strictEqual(storage.data.bestByLevel[1].score, 1000);
   assert.strictEqual(storage.data.bestByLevel[1].maxBufferUsed, 2);
   storage.recordResult({
@@ -905,7 +955,54 @@ test('进度存档只补发新增星星并正确解锁下一关', () => {
   assert.strictEqual(storage.data.totalPoints, getTotalPoints(storage.data));
 });
 
-test('主题必须按顺序全收集后解锁，并自动从新主题第 1 关开始', () => {
+test('装箱基地装饰会立即应用，并只能切换已解锁风格', () => {
+  let persisted = null;
+  const storage = new Storage({
+    getStorageSync() { return persisted; },
+    setStorageSync(key, value) { persisted = JSON.parse(JSON.stringify(value)); }
+  });
+  assert.strictEqual(CONFIG.SHOP_NODE_STARS, 12);
+  storage.data.pendingDecorationNode = 1;
+  assert.strictEqual(storage.chooseWarehouseDecoration('fresh'), true);
+  assert.deepStrictEqual(storage.data.warehouseDecorations, [{ node: 1, style: 'fresh' }]);
+  assert.strictEqual(storage.data.warehouseStyle, 'fresh');
+  assert.strictEqual(storage.setWarehouseStyle('warm'), false, '未解锁的风格不能假装已应用');
+
+  storage.data.pendingDecorationNode = 2;
+  assert.strictEqual(storage.chooseWarehouseDecoration('warm'), true);
+  assert.strictEqual(storage.data.warehouseStyle, 'warm');
+  assert.strictEqual(storage.setWarehouseStyle('fresh'), true);
+  assert.strictEqual(storage.data.warehouseStyle, 'fresh');
+
+  let toast = '';
+  let confetti = 0;
+  const app = Object.create(GameApp.prototype);
+  Object.assign(app, {
+    storage,
+    view: { decorationChoice: 3, baseDecorOpen: false },
+    renderer: {
+      confetti() { confetti += 1; },
+      showToast(message) { toast = message; }
+    },
+    analytics: { report() {} }
+  });
+  storage.data.pendingDecorationNode = 3;
+  assert.strictEqual(app._chooseDecoration('warm'), true);
+  assert.strictEqual(confetti, 1);
+  assert(toast.includes('已应用到首页'));
+  assert.strictEqual(app._openBaseDecor(), true);
+  assert.strictEqual(app.view.baseDecorOpen, true);
+  assert.strictEqual(app._applyBaseDecorStyle('fresh'), true);
+  assert(toast.includes('首页已切换'));
+});
+
+test('发布版本已统一升级为 1.1.0', () => {
+  assert.strictEqual(CONFIG.VERSION, '1.1.0');
+  assert.strictEqual(require('../package.json').version, CONFIG.VERSION);
+  assert.strictEqual(require('../package-lock.json').version, CONFIG.VERSION);
+});
+
+test('主题按每 20 个全局首通解锁，全收集只授予称号', () => {
   let persisted = null;
   const storage = new Storage({
     getStorageSync() { return persisted; },
@@ -917,14 +1014,24 @@ test('主题必须按顺序全收集后解锁，并自动从新主题第 1 关�
   });
   const unlocked = storage.collectCollectible(fruits[fruits.length - 1].id, fruits[fruits.length - 1].minLevel);
   assert.strictEqual(unlocked.themeCompleted, true);
-  assert.strictEqual(unlocked.unlockedTheme.id, 'vegetable');
+  assert.strictEqual(unlocked.unlockedTheme, null);
+  assert.strictEqual(unlocked.cosmeticTitle, '果园馆长');
+  assert.deepStrictEqual(storage.data.unlockedThemes, ['fruit']);
+  let milestone = null;
+  for (let level = 1; level <= 20; level += 1) {
+    milestone = storage.recordResult({
+      themeId: 'fruit', level, daily: false, status: 'won', stars: 1,
+      score: 500, boxesCompleted: 3, boxTotal: 3, bestCombo: 3
+    });
+  }
+  assert.strictEqual(milestone.unlockedTheme.id, 'vegetable');
   assert.deepStrictEqual(storage.data.unlockedThemes, ['fruit', 'vegetable']);
   assert.strictEqual(storage.data.activeThemeId, 'vegetable');
   assert.strictEqual(storage.getActiveLevel(), 1);
   assert.strictEqual(storage.setActiveTheme('digital'), false, '不得跳过家电主题直接进入数码主题');
 });
 
-test('v3 存档迁移到 v8 后保留水果关卡、收藏、积分与最佳纪录', () => {
+test('v3 存档迁移到 v9 后保留水果关卡、收藏、成绩与最佳纪录', () => {
   const legacy = {
     version: 3,
     highestLevel: 42,
@@ -935,15 +1042,15 @@ test('v3 存档迁移到 v8 后保留水果关卡、收藏、积分与最佳纪�
     rescueTickets: 5
   };
   const storage = new Storage({ getStorageSync() { return legacy; }, setStorageSync() {} });
-  assert.strictEqual(storage.data.version, 8);
+  assert.strictEqual(storage.data.version, 9);
   assert.strictEqual(storage.data.activeThemeId, 'fruit');
   assert.strictEqual(storage.data.highestLevelByTheme.fruit, 42);
   assert.strictEqual(storage.data.collectionPoints, 678);
   assert.strictEqual(storage.data.rareFruits.starlight_strawberry.count, 1);
   assert.strictEqual(storage.data.bestByTheme.fruit[41].score, 8000);
-  assert.strictEqual(storage.data.rescueTickets, 5);
+  assert.strictEqual(storage.data.rescueTickets, 3);
   assert.strictEqual(storage.data.bufferSlotsUnlocked, 1);
-  assert.strictEqual(storage.data.pauseTickets, 2);
+  assert.strictEqual(storage.data.pauseTickets, 0);
 });
 
 test('旧双金币存档只保留真实余额，不用历史累计值覆盖当前金币', () => {
@@ -967,7 +1074,7 @@ test('旧双金币存档只保留真实余额，不用历史累计值覆盖当�
   assert.strictEqual(Object.prototype.hasOwnProperty.call(persisted, 'lifetimeCoins'), false);
 });
 
-test('v2 存档会迁移到 v8 主题积分与救援券且不丢失原珍果', () => {
+test('v2 存档会迁移到 v9 主题成绩与救援券且不丢失原珍果', () => {
   const fruit = RARE_FRUIT_MAP.starlight_strawberry;
   const legacy = {
     version: 2,
@@ -982,14 +1089,14 @@ test('v2 存档会迁移到 v8 主题积分与救援券且不丢失原珍果', (
     getStorageSync() { return legacy; },
     setStorageSync() {}
   });
-  assert.strictEqual(storage.data.version, 8);
+  assert.strictEqual(storage.data.version, 9);
   assert(storage.data.adventurePoints > 0);
   assert.strictEqual(storage.data.collectionPoints, fruit.firstPoints + fruit.duplicatePoints);
   assert.strictEqual(storage.data.totalPoints, getTotalPoints(storage.data));
-  assert.strictEqual(storage.data.rescueTickets, 3);
+  assert.strictEqual(storage.data.rescueTickets, 1);
 });
 
-test('v4 存档迁移到 v8 后新增机制教学记录且不丢原进度', () => {
+test('v4 存档迁移到 v9 后新增机制教学记录且不丢原进度', () => {
   let persisted = null;
   const legacy = {
     version: 4,
@@ -1006,7 +1113,7 @@ test('v4 存档迁移到 v8 后新增机制教学记录且不丢原进度', () =
     setStorageSync(key, value) { persisted = JSON.parse(JSON.stringify(value)); }
   };
   const storage = new Storage(platform);
-  assert.strictEqual(storage.data.version, 8);
+  assert.strictEqual(storage.data.version, 9);
   assert.deepStrictEqual(storage.data.seenMechanics, {});
   assert.strictEqual(storage.getThemeLevel('fruit'), 24);
   assert.strictEqual(storage.data.bestByTheme.fruit[23].score, 9000);
@@ -1032,7 +1139,7 @@ test('v5 已开启旧主题的存档会补齐新增前置主题，不会失去�
   assert.strictEqual(storage.data.bufferSlotsUnlocked, 1);
 });
 
-test('首次闯关累积积分，每 10 个主线关补发救援券', () => {
+test('首次闯关累积总成绩，每 25 个全局首通补发救援券', () => {
   let persisted = null;
   const storage = new Storage({
     getStorageSync() { return persisted; },
@@ -1047,24 +1154,27 @@ test('首次闯关累积积分，每 10 个主线关补发救援券', () => {
     maxBufferUsed: 1, boxesCompleted: 3
   });
   assert(first.adventurePoints > replay.adventurePoints);
-  const milestone = storage.recordResult({
-    level: 10, daily: false, status: 'won', stars: 3, score: 3000,
-    maxBufferUsed: 1, boxesCompleted: 7
-  });
+  let milestone = null;
+  for (let level = 2; level <= 25; level += 1) {
+    milestone = storage.recordResult({
+      level, daily: false, status: 'won', stars: 3, score: 3000,
+      maxBufferUsed: 1, boxesCompleted: 8, boxTotal: 8, bestCombo: 12
+    });
+  }
   assert.strictEqual(milestone.rescueTicketBonus, 1);
-  assert.strictEqual(storage.data.rescueTickets, 4);
+  assert.strictEqual(storage.data.rescueTickets, 2);
 });
 
-test('每点亮 10 种珍果补发救援券，广告关闭也能用券复活', () => {
+test('每点亮 20 种藏品补发救援券，广告关闭也能用券复活', () => {
   let persisted = null;
   const storage = new Storage({
     getStorageSync() { return persisted; },
     setStorageSync(key, value) { persisted = JSON.parse(JSON.stringify(value)); }
   });
-  let tenth = null;
-  RARE_FRUITS.slice(0, 10).forEach((fruit) => { tenth = storage.collectRareFruit(fruit.id, fruit.minLevel); });
-  assert.strictEqual(tenth.rescueTicketBonus, 1);
-  assert.strictEqual(storage.data.rescueTickets, 4);
+  let twentieth = null;
+  RARE_FRUITS.slice(0, 20).forEach((fruit) => { twentieth = storage.collectRareFruit(fruit.id, fruit.minLevel); });
+  assert.strictEqual(twentieth.rescueTicketBonus, 1);
+  assert.strictEqual(storage.data.rescueTickets, 2);
 
   const model = new GameModel({
     level: 8,
@@ -1089,7 +1199,7 @@ test('每点亮 10 种珍果补发救援券，广告关闭也能用券复活', (
     ads: { canReward() { return false; } },
     platform: { isDev: true },
     audio: { play() {} },
-    renderer: { showToast() {} },
+    renderer: { showToast() {}, showHint() {} },
     analytics: { report() {} },
     lastFrameAt: 0
   });
@@ -1104,7 +1214,7 @@ test('金币不足时会先展示藏品兑换方案，确认后完成出售与�
   const storage = new Storage({ getStorageSync() { return null; }, setStorageSync() {} });
   const collectible = getThemeCollectibles('fruit')[0];
   storage.collectCollectible(collectible.id, collectible.minLevel);
-  storage.data.rareFruits[collectible.id].owned = 50;
+  storage.data.rareFruits[collectible.id].owned = 200;
   storage.data.coins = 20;
   const model = new GameModel({
     themeId: 'fruit', level: 9, seed: 88, daily: false, activeOrderCount: 1,
@@ -1129,7 +1239,7 @@ test('金币不足时会先展示藏品兑换方案，确认后完成出售与�
   });
   assert.strictEqual(app._revive('coins'), false);
   assert.strictEqual(app.view.revivePanel, 'exchange');
-  assert(app.view.reviveExchangeOffer.plan.total >= 160);
+  assert(app.view.reviveExchangeOffer.plan.total >= 580);
   const ownedBefore = storage.data.rareFruits[collectible.id].owned;
   assert.strictEqual(app._confirmReviveExchange(), true);
   assert.strictEqual(model.status, 'playing');
@@ -1147,7 +1257,7 @@ test('金币段位与无尽远征主题边界正确', () => {
   assert.strictEqual(getJourneyInfo(151).season, 2);
 });
 
-test('7 日签到循环与三连胜宝箱正确发奖', () => {
+test('低通胀 7 日签到与三次首通货车宝箱正确发奖', () => {
   let persisted = null;
   const platform = {
     getStorageSync() { return persisted; },
@@ -1160,12 +1270,12 @@ test('7 日签到循环与三连胜宝箱正确发奖', () => {
     assert.strictEqual(claim.claimed, true);
     assert.strictEqual(claim.day, day + 1);
   }
-  assert.strictEqual(claim.reward, 90);
-  assert.strictEqual(storage.data.coins, 405);
+  assert.strictEqual(claim.reward, 20);
+  assert.strictEqual(storage.data.coins, 168);
   assert.strictEqual(storage.claimDailyLogin(new Date(2026, 6, 7, 20, 0, 0)).claimed, false);
   const loop = storage.claimDailyLogin(new Date(2026, 6, 8, 12, 0, 0));
   assert.strictEqual(loop.day, 1);
-  assert.strictEqual(loop.reward, 20);
+  assert.strictEqual(loop.reward, 5);
 
   let third = null;
   for (let level = 1; level <= 3; level += 1) {
@@ -1180,10 +1290,175 @@ test('7 日签到循环与三连胜宝箱正确发奖', () => {
     });
   }
   assert.strictEqual(third.winStreak, 3);
-  assert.strictEqual(third.streakBonus, 50);
+  assert.strictEqual(third.truckChest, true);
+  assert.strictEqual(third.streakBonus, 12);
   assert.strictEqual(storage.data.streakChestCount, 1);
   storage.recordResult({ level: 4, daily: false, status: 'failed', stars: 0, score: 0, maxBufferUsed: 7, boxesCompleted: 0 });
   assert.strictEqual(storage.data.winStreak, 0);
+});
+
+test('10 连击会清除当前警告、加 3 秒并开启 3 秒黄金停表', () => {
+  const model = new GameModel({
+    themeId: 'fruit', level: 20, seed: 77, daily: false, activeOrderCount: 1,
+    targetPerBox: 3, timeLimitMs: 60000, shelfShiftEnabled: false,
+    orderQueue: ['apple', 'apple', 'apple', 'apple'],
+    stacks: [['bread']].concat(Array.from({ length: 12 }, () => ['apple']))
+  });
+  const warning = model.selectStack(0);
+  assert.strictEqual(warning.warning, true);
+  assert.strictEqual(model.remainingMs, 52000);
+  let sixth = null;
+  let tenth = null;
+  for (let index = 0; index < 10; index += 1) {
+    const result = model.selectStack(model.getHint());
+    if (model.combo === 6) sixth = result;
+    if (model.combo === 10) tenth = result;
+  }
+  assert(sixth.safeHighlightStack >= 0);
+  assert.strictEqual(tenth.comboMilestone, 10);
+  assert.strictEqual(tenth.warningCleared, true);
+  assert.strictEqual(model.warningActive, false);
+  assert.strictEqual(model.remainingMs, 55000);
+  assert.strictEqual(model.getGoldenPackingMs(), 3000);
+  model.tick(2000, { pauseLevelTimer: false, allowCollectibleStart: true });
+  assert.strictEqual(model.remainingMs, 55000, '黄金装箱期间主倒计时应停住');
+  model.tick(2000, { pauseLevelTimer: false, allowCollectibleStart: true });
+  assert.strictEqual(model.remainingMs, 54000);
+});
+
+test('自动装箱与整理不会虚增或打断玩家连击', () => {
+  const model = new GameModel({
+    themeId: 'fruit', level: 12, seed: 78, daily: false, activeOrderCount: 1,
+    targetPerBox: 3, timeLimitMs: 60000, shelfShiftEnabled: false,
+    orderQueue: ['apple', 'apple'],
+    stacks: Array.from({ length: 6 }, () => ['apple'])
+  });
+  model.selectStack(model.getHint());
+  model.selectStack(model.getHint());
+  assert.strictEqual(model.combo, 2);
+  const results = model.autoPack({ maxItems: 4, stopAfterBox: true });
+  assert(results.some((result) => result.completed.length));
+  assert.strictEqual(model.combo, 2);
+  assert.strictEqual(model.shuffleVisible(), true);
+  assert.strictEqual(model.combo, 2);
+});
+
+test('首通经济稳定在每关约 25 金币，核心消耗显著高于单关产出', () => {
+  const storage = new Storage({ getStorageSync() { return null; }, setStorageSync() {} });
+  let earned = 0;
+  for (let level = 1; level <= 10; level += 1) {
+    const config = generateLevel(level, { disableCollectible: true });
+    const reward = storage.recordResult({
+      themeId: 'fruit', level, daily: false, status: 'won', stars: 3,
+      score: 1200, boxesCompleted: config.orderQueue.length, boxTotal: config.orderQueue.length,
+      bestCombo: 12, elapsedMs: 20000
+    });
+    earned += reward.earnedCoins;
+  }
+  assert(earned >= 230 && earned <= 280, `前 10 关实际产出 ${earned}`);
+  assert(REVIVE_COIN_COST > earned * 2);
+  assert.strictEqual(BOOSTER_COIN_COSTS.hint, 120);
+  assert.strictEqual(BOOSTER_COIN_COSTS.shuffle, 180);
+  assert.strictEqual(BOOSTER_COIN_COSTS.add_time, 260);
+  assert.strictEqual(BOOSTER_COIN_COSTS.auto_pack, 360);
+});
+
+test('无论金币是否足够，道具都先展示金币与视频的明确选择', () => {
+  const storage = new Storage({ getStorageSync() { return null; }, setStorageSync() {} });
+  storage.data.coins = 1000;
+  const app = Object.create(GameApp.prototype);
+  let applied = 0;
+  Object.assign(app, {
+    model: { status: 'playing' },
+    storage,
+    runId: 9,
+    view: { boosterChoice: null },
+    pendingBooster: null,
+    ads: { canReward() { return true; } },
+    analytics: { report() {} }
+  });
+  assert.strictEqual(app._obtainBooster('hint', 120, () => { applied += 1; }, () => { applied += 10; }), true);
+  assert.strictEqual(storage.data.coins, 1000);
+  assert.strictEqual(applied, 0);
+  assert.deepStrictEqual(app.view.boosterChoice, {
+    type: 'hint', cost: 120, coins: 1000, rewardAvailable: true
+  });
+  assert.strictEqual(app._confirmBoosterChoice('coins'), true);
+  assert.strictEqual(storage.data.coins, 880);
+  assert.strictEqual(applied, 1);
+});
+
+test('动态货架命中位置跟随动画，换道预告与安全窗会阻止点击', () => {
+  const layout = {
+    cardSize: 100,
+    positions: [
+      { x: 100, y: 200, rowIndex: 0 },
+      { x: 230, y: 200, rowIndex: 0 },
+      { x: 100, y: 430, rowIndex: 1 },
+      { x: 230, y: 430, rowIndex: 1 }
+    ],
+    rows: [
+      { x: 100, y: 200, width: 230, count: 2 },
+      { x: 100, y: 430, width: 230, count: 2 }
+    ]
+  };
+  const moving = getMovementState(layout, { type: 'horizontal', amplitude: 24, periodMs: 4000 }, 1000, false);
+  assert.notStrictEqual(moving.positions[0].x, layout.positions[0].x);
+  assert.strictEqual(moving.positions[1].x - moving.positions[0].x, 130, '同一传送带应整体移动且不重叠');
+  const reduced = getMovementState(layout, { type: 'horizontal', amplitude: 24, periodMs: 4000 }, 1000, true);
+  assert(Math.abs(reduced.positions[0].x - 100) < Math.abs(moving.positions[0].x - 100));
+  const reducedSamePhase = getMovementState(layout, { type: 'horizontal', amplitude: 24, periodMs: 4000 }, 1000 / 0.7, true);
+  assert(Math.abs(reducedSamePhase.positions[0].x - 100 - 16.8) < 0.01, '舒缓动态应只降低 30% 速度与幅度');
+  const warning = getMovementState(layout, { type: 'lane_swap', periodMs: 7200, warningMs: 600, transitionMs: 820, safetyMs: 300 }, 0, false);
+  assert.strictEqual(warning.warning, true);
+  assert.strictEqual(warning.inputBlocked, true);
+  const settled = getMovementState(layout, { type: 'lane_swap', periodMs: 7200, warningMs: 600, transitionMs: 820, safetyMs: 300 }, 2200, false);
+  assert.strictEqual(settled.inputBlocked, false);
+});
+
+test('难度预算限制机制叠加并在高压关后安排恢复关', () => {
+  assert.strictEqual(getDifficultyBudget(4, 4).max, 0);
+  assert.strictEqual(getDifficultyBudget(20, 20).max, 1, '大订单应主动降低叠加预算');
+  assert.strictEqual(getDifficultyBudget(45, 45).max, 3);
+  assert.strictEqual(getDifficultyBudget(45, 46).recovery, true);
+  assert.strictEqual(getDifficultyBudget(45, 46).max, 2);
+  [40, 50, 60, 80, 120].forEach((level) => {
+    const config = generateLevel(level, { disableCollectible: true });
+    assert(config.mechanics.budget.used <= config.mechanics.budget.max);
+    if (config.movement) assert.strictEqual(config.bombTrapCount, 0, '移动关不应叠加炸弹');
+  });
+});
+
+test('插屏只在 10 分钟、4 胜、240 秒间隔后出现，并受激励视频与宝箱抑制', () => {
+  const manager = new AdManager(
+    { api: null, isDev: false },
+    { report() {} }
+  );
+  manager.sessionStartedAt = Date.now() - CONFIG.FIRST_INTERSTITIAL_SESSION_MS - 1000;
+  for (let index = 0; index < 3; index += 1) manager.noteWin(20);
+  assert.strictEqual(manager.canShowInterstitial(20), false);
+  manager.noteWin(20);
+  assert.strictEqual(manager.canShowInterstitial(20), true);
+  assert.strictEqual(manager.canShowInterstitial(20, { suppress: true }), false);
+  manager.lastRewardedAt = Date.now();
+  assert.strictEqual(manager.canShowInterstitial(20), false);
+  manager.lastRewardedAt = 0;
+  manager.interstitialsThisSession = CONFIG.MAX_INTERSTITIALS_PER_SESSION;
+  assert.strictEqual(manager.canShowInterstitial(20), false);
+});
+
+test('每日自然任务累计印章，七枚印章兑换救援券', () => {
+  const storage = new Storage({ getStorageSync() { return null; }, setStorageSync() {} });
+  storage.data.activityStamps = 6;
+  const result = storage.recordResult({
+    themeId: 'fruit', level: 1, daily: false, status: 'won', stars: 3,
+    score: 1000, boxesCompleted: 3, boxTotal: 3, bestCombo: 10, elapsedMs: 20000
+  });
+  assert.strictEqual(result.dailyTaskStamps, 1, '首局只应完成 10 连击任务');
+  assert.strictEqual(result.activityReward, true);
+  assert.strictEqual(result.rescueTicketBonus, 1);
+  assert.strictEqual(storage.data.activityCycles, 1);
+  assert.strictEqual(storage.data.activityStamps, 0);
 });
 
 test('分享参数可还原同一主题与同一好友挑战', () => {
@@ -1207,7 +1482,10 @@ test('分享参数可还原同一主题与同一好友挑战', () => {
 test('分享文案会体现战绩与好友挑战结果', () => {
   assert(createTitle({ status: 'won', level: 3, maxBufferUsed: 2 }).includes('第3关'));
   assert(createTitle({ status: 'won', challengeScore: 900, challengeBeat: true }).includes('超过'));
-  assert(createTitle({ daily: true, boxesCompleted: 11 }).includes('11箱'));
+  const dailyTitle = createTitle({ daily: true, boxesCompleted: 11 });
+  assert(dailyTitle.includes('11箱'));
+  assert(dailyTitle.includes('25 金币'));
+  assert(!dailyTitle.includes('60 金币'));
   assert(createTitle({ rareFruitName: '星辉草莓', rarityName: '稀有', level: 5 }).includes('星辉草莓'));
   assert(createTitle({ fruitShop: true, rareCount: 3, rarestFruitName: '水晶梨' }).includes('3/56'));
   assert(createTitle({ status: 'failed', level: 18, boxesCompleted: 8, boxTotal: 10, coins: 12345 }).includes('只差2箱'));

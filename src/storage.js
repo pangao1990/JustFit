@@ -27,7 +27,7 @@ const { THEMES, getNextTheme, getTheme, normalizeThemeId } = require('./themes')
 const { dayKey } = require('./utils');
 
 const DEFAULT_DATA = Object.freeze({
-  version: 8,
+  version: 9,
   activeThemeId: 'fruit',
   unlockedThemes: ['fruit'],
   highestLevelByTheme: { fruit: 1 },
@@ -43,9 +43,10 @@ const DEFAULT_DATA = Object.freeze({
   collectionPoints: 0,
   fruitPoints: 0,
   totalPoints: 0,
-  rescueTickets: 3,
+  rescueTickets: 1,
+  newcomerRescues: 2,
   rescueTicketsEarned: 0,
-  pauseTickets: 2,
+  pauseTickets: 0,
   adCoinDate: '',
   adCoinViews: 0,
   soundEnabled: true,
@@ -71,11 +72,36 @@ const DEFAULT_DATA = Object.freeze({
   lastDailyReward: 0,
   winStreak: 0,
   streakChestCount: 0,
+  firstClearCount: 0,
+  truckProgress: 0,
+  upgradedTruckChests: 0,
+  dailyTaskDate: '',
+  dailyTaskProgress: { play: 0, win: 0, combo: 0 },
+  dailyTaskCompleted: {},
+  activityStamps: 0,
+  activityCycles: 0,
+  personalRecords: { bestCombo: 0, fastestClearMs: 0, bestWinStreak: 0, bestDailyScore: 0, endlessWave: 0 },
+  warehouseDecorations: [],
+  cosmeticTitles: [],
+  warehouseStyle: 'warm',
+  pendingDecorationNode: 0,
+  reducedMotion: false,
   lastPlayedAt: 0
 });
 
-const DAILY_LOGIN_REWARDS = Object.freeze([20, 25, 30, 35, 45, 60, 90]);
-const MAX_RESCUE_TICKETS = 9;
+const DAILY_LOGIN_REWARDS = Object.freeze([5, 5, 8, 8, 10, 12, 20]);
+const MAX_RESCUE_TICKETS = 3;
+const COLLECTIBLE_COIN_REWARDS = Object.freeze({
+  rare: Object.freeze({ first: 15, duplicate: 3 }),
+  epic: Object.freeze({ first: 25, duplicate: 5 }),
+  legendary: Object.freeze({ first: 40, duplicate: 8 }),
+  mythic: Object.freeze({ first: 60, duplicate: 12 })
+});
+const DAILY_TASKS = Object.freeze([
+  Object.freeze({ id: 'play', target: 3, label: '完成 3 局' }),
+  Object.freeze({ id: 'win', target: 2, label: '通关 2 次' }),
+  Object.freeze({ id: 'combo', target: 10, label: '达成 10 连击' })
+]);
 
 class Storage {
   constructor(platform) {
@@ -99,7 +125,12 @@ class Storage {
       themePity: Object.assign({}, raw.themePity || {}),
       lastCollectibleRollKeyByTheme: Object.assign({}, raw.lastCollectibleRollKeyByTheme || {}),
       seenMechanics: Object.assign({}, raw.seenMechanics || {}),
-      boosterVouchers: normalizeVouchers(raw.boosterVouchers)
+      boosterVouchers: normalizeVouchers(raw.boosterVouchers),
+      dailyTaskProgress: Object.assign({}, raw.dailyTaskProgress || {}),
+      dailyTaskCompleted: Object.assign({}, raw.dailyTaskCompleted || {}),
+      personalRecords: Object.assign({}, DEFAULT_DATA.personalRecords, raw.personalRecords || {}),
+      warehouseDecorations: normalizeWarehouseDecorations(raw.warehouseDecorations),
+      cosmeticTitles: Array.isArray(raw.cosmeticTitles) ? raw.cosmeticTitles.slice() : []
     });
 
     if (!Object.keys(data.highestLevelByTheme).length) data.highestLevelByTheme.fruit = Math.max(1, Math.floor(Number(raw.highestLevel) || 1));
@@ -107,10 +138,13 @@ class Storage {
     if (!Object.keys(data.bestByTheme).length) data.bestByTheme.fruit = Object.assign({}, raw.bestByLevel || {});
     if (!data.bestByTheme.fruit) data.bestByTheme.fruit = Object.assign({}, raw.bestByLevel || {});
 
-    data.unlockedThemes = normalizeUnlockedThemes(raw.unlockedThemes, data.rareFruits);
+    data.firstClearCount = raw.firstClearCount == null
+      ? estimateFirstClearCount(data)
+      : normalizePoints(raw.firstClearCount);
+    data.unlockedThemes = normalizeUnlockedThemes(raw.unlockedThemes, data.rareFruits, data.firstClearCount, Number(raw.version) < 9);
     const requestedActive = raw.activeThemeId && data.unlockedThemes.indexOf(raw.activeThemeId) >= 0
       ? raw.activeThemeId
-      : data.unlockedThemes[data.unlockedThemes.length - 1];
+      : (data.unlockedThemes.indexOf(data.activeThemeId) >= 0 ? data.activeThemeId : 'fruit');
     data.activeThemeId = normalizeThemeId(requestedActive || 'fruit');
     if (data.unlockedThemes.indexOf(data.activeThemeId) < 0) data.activeThemeId = 'fruit';
 
@@ -140,11 +174,22 @@ class Storage {
     data.lastCollectibleId = raw.lastCollectibleId || raw.lastRareFruitId || '';
     data.collectiblesSold = normalizePoints(raw.collectiblesSold);
     data.rescueTickets = clampTickets(raw.rescueTickets == null ? DEFAULT_DATA.rescueTickets : raw.rescueTickets);
+    data.newcomerRescues = Math.min(2, normalizePoints(raw.newcomerRescues == null ? DEFAULT_DATA.newcomerRescues : raw.newcomerRescues));
     data.rescueTicketsEarned = normalizePoints(data.rescueTicketsEarned);
-    data.pauseTickets = clampPauseTickets(raw.pauseTickets == null ? DEFAULT_DATA.pauseTickets : raw.pauseTickets);
+    data.pauseTickets = 0;
     data.adCoinDate = typeof raw.adCoinDate === 'string' ? raw.adCoinDate : '';
     data.adCoinViews = Math.min(AD_COIN_DAILY_LIMIT, normalizePoints(raw.adCoinViews));
     data.bufferSlotsUnlocked = clampBufferSlots(raw.bufferSlotsUnlocked == null ? 1 : raw.bufferSlotsUnlocked);
+    data.truckProgress = Math.min(2, normalizePoints(data.truckProgress));
+    data.activityStamps = Math.min(6, normalizePoints(data.activityStamps));
+    data.activityCycles = normalizePoints(data.activityCycles);
+    data.dailyTaskDate = typeof data.dailyTaskDate === 'string' ? data.dailyTaskDate : '';
+    data.pendingDecorationNode = Math.min(10, normalizePoints(data.pendingDecorationNode));
+    data.warehouseStyle = data.warehouseStyle === 'fresh' ? 'fresh' : 'warm';
+    if (data.warehouseDecorations.length && !data.warehouseDecorations.some((entry) => entry.style === data.warehouseStyle)) {
+      data.warehouseStyle = data.warehouseDecorations[data.warehouseDecorations.length - 1].style;
+    }
+    data.reducedMotion = Boolean(data.reducedMotion);
     syncLegacyAliases(data);
     return data;
   }
@@ -159,7 +204,8 @@ class Storage {
     delete this.data.lifetimeCoins;
     this.data.boosterVouchers = normalizeVouchers(this.data.boosterVouchers);
     this.data.rescueTickets = clampTickets(this.data.rescueTickets);
-    this.data.pauseTickets = clampPauseTickets(this.data.pauseTickets);
+    this.data.newcomerRescues = Math.min(2, normalizePoints(this.data.newcomerRescues));
+    this.data.pauseTickets = 0;
     this.data.adCoinViews = Math.min(AD_COIN_DAILY_LIMIT, normalizePoints(this.data.adCoinViews));
     this.data.bufferSlotsUnlocked = clampBufferSlots(this.data.bufferSlotsUnlocked);
     syncLegacyAliases(this.data);
@@ -206,20 +252,32 @@ class Storage {
   recordResult(result) {
     const themeId = normalizeThemeId(result.themeId || this.data.activeThemeId || 'fruit');
     const themeBest = this.data.bestByTheme[themeId] || (this.data.bestByTheme[themeId] = {});
+    const rankBefore = getPointRank(getTotalPoints(this.data));
     const summary = {
       gainedStars: 0,
       baseCoins: 0,
+      boxCoins: 0,
       completionCoins: 0,
       starCoins: 0,
       dailyBonusCoins: 0,
       streakBonus: 0,
-      earnedCoins: Math.max(0, Math.floor(Number(result.packingCoinsEarned) || 0)),
+      repeatCoins: 0,
+      consolationCoins: 0,
+      earnedCoins: 0,
       winStreak: this.data.winStreak || 0,
       adventurePoints: 0,
       totalPoints: getTotalPoints(this.data),
       rescueTicketBonus: 0,
-      rankBefore: getPointRank(this.data.coins),
-      rankAfter: getPointRank(this.data.coins),
+      newcomerRescueBonus: 0,
+      truckChest: false,
+      truckProgress: this.data.truckProgress || 0,
+      unlockedTheme: null,
+      dailyTaskStamps: 0,
+      activityReward: false,
+      decorationUnlocked: 0,
+      firstClear: false,
+      rankBefore,
+      rankAfter: rankBefore,
       rankUp: false
     };
     const previousDailyBest = this.data.bestDailyScore || 0;
@@ -227,6 +285,7 @@ class Storage {
     const firstMainClear = !result.daily && !result.challenge && !(
       old && old.cleared === true || result.level < this.getThemeLevel(themeId)
     );
+    summary.firstClear = firstMainClear && result.status === 'won';
     this.data.gamesPlayed += 1;
     this.data.boxesPacked += result.boxesCompleted || 0;
 
@@ -236,7 +295,7 @@ class Storage {
         this.data.bestDailyDate = dayKey();
       }
       if (result.status === 'won' && this.data.lastDailyClearDate !== dayKey()) {
-        summary.dailyBonusCoins = 60;
+        summary.dailyBonusCoins = 25;
         this.data.lastDailyClearDate = dayKey();
         this._creditCoins(summary.dailyBonusCoins);
       }
@@ -245,18 +304,33 @@ class Storage {
       const gainedStars = Math.max(0, result.stars - oldBest.stars);
       this.data.totalStars += gainedStars;
       summary.gainedStars = gainedStars;
-      summary.completionCoins = 20;
-      summary.starCoins = Math.max(0, Math.floor(Number(result.stars) || 0)) * 10;
-      summary.baseCoins = summary.completionCoins + summary.starCoins;
-      this._creditCoins(summary.baseCoins);
+      if (firstMainClear) {
+        summary.boxCoins = Math.min(8, Math.max(0, Math.floor(Number(result.boxesCompleted) || 0)));
+        summary.completionCoins = 8;
+        summary.starCoins = result.stars >= 3 ? 8 : (result.stars >= 2 ? 4 : 0);
+        this.data.firstClearCount = normalizePoints(this.data.firstClearCount) + 1;
+        this.data.truckProgress = (normalizePoints(this.data.truckProgress) + 1) % 3;
+        if (this.data.truckProgress === 0) {
+          summary.truckChest = true;
+          summary.streakBonus = 12;
+          this.data.streakChestCount = normalizePoints(this.data.streakChestCount) + 1;
+        }
+        summary.baseCoins = summary.boxCoins + summary.completionCoins + summary.starCoins + summary.streakBonus;
+        this._creditCoins(summary.baseCoins);
+        if (this.data.firstClearCount % 25 === 0) {
+          summary.rescueTicketBonus += this.addRescueTickets(1, false);
+        }
+        summary.unlockedTheme = this._syncThemeUnlocks();
+      } else if (!result.challenge) {
+        const fullReward = 8 + Math.min(8, Math.max(0, Math.floor(Number(result.boxesCompleted) || 0))) +
+          (result.stars >= 3 ? 8 : (result.stars >= 2 ? 4 : 0));
+        summary.repeatCoins = Math.max(1, Math.floor(fullReward * 0.25));
+        summary.baseCoins = summary.repeatCoins;
+        this._creditCoins(summary.repeatCoins);
+      }
       if (!result.challenge) {
         this.data.winStreak = (this.data.winStreak || 0) + 1;
         summary.winStreak = this.data.winStreak;
-        if (this.data.winStreak % 3 === 0) {
-          summary.streakBonus = 50;
-          this._creditCoins(summary.streakBonus);
-          this.data.streakChestCount = (this.data.streakChestCount || 0) + 1;
-        }
       }
       if (!result.challenge || result.level <= this.getThemeLevel(themeId)) {
         this.data.highestLevelByTheme[themeId] = Math.max(this.getThemeLevel(themeId), result.level + 1);
@@ -272,6 +346,10 @@ class Storage {
     } else if (!result.daily && result.status === 'failed' && !result.challenge) {
       this.data.winStreak = 0;
       summary.winStreak = 0;
+      const completed = Math.max(0, Math.floor(Number(result.boxesCompleted) || 0));
+      const total = Math.max(1, Math.floor(Number(result.boxTotal) || completed || 1));
+      summary.consolationCoins = completed > 0 ? Math.min(5, Math.max(1, Math.floor(completed / total * 5))) : 0;
+      this._creditCoins(summary.consolationCoins);
     }
 
     summary.adventurePoints = calculateAdventurePoints(result, {
@@ -280,15 +358,134 @@ class Storage {
     });
     this.data.adventurePoints += summary.adventurePoints;
 
-    if (result.status === 'won' && firstMainClear && result.level % 10 === 0) {
-      summary.rescueTicketBonus = this.addRescueTickets(1, false);
+    const taskSummary = this._recordDailyTasks(result);
+    summary.dailyTaskStamps = taskSummary.stamps;
+    summary.activityReward = taskSummary.activityReward;
+    summary.rescueTicketBonus += taskSummary.rescueTicketBonus;
+    this._recordPersonalRecords(result);
+    const unlockedNode = Math.min(10, Math.floor(normalizePoints(this.data.totalStars) / CONFIG.SHOP_NODE_STARS));
+    const decorated = Array.isArray(this.data.warehouseDecorations) ? this.data.warehouseDecorations.length : 0;
+    if (unlockedNode > decorated && !this.data.pendingDecorationNode) {
+      this.data.pendingDecorationNode = decorated + 1;
+      summary.decorationUnlocked = this.data.pendingDecorationNode;
     }
-    summary.earnedCoins += summary.baseCoins + summary.dailyBonusCoins + summary.streakBonus;
+    summary.truckProgress = this.data.truckProgress || 0;
+    summary.earnedCoins = summary.baseCoins + summary.dailyBonusCoins + summary.consolationCoins;
     summary.totalPoints = getTotalPoints(this.data);
-    summary.rankAfter = getPointRank(this.data.coins);
+    summary.rankAfter = getPointRank(summary.totalPoints);
     summary.rankUp = summary.rankAfter.index > summary.rankBefore.index;
     this.save();
     return summary;
+  }
+
+  _syncThemeUnlocks() {
+    const allowedIndex = Math.min(THEMES.length - 1, Math.floor(normalizePoints(this.data.firstClearCount) / 20));
+    let newest = null;
+    for (let index = 0; index <= allowedIndex; index += 1) {
+      const theme = THEMES[index];
+      if (this.data.unlockedThemes.indexOf(theme.id) >= 0) continue;
+      this.data.unlockedThemes.push(theme.id);
+      this.data.highestLevelByTheme[theme.id] = Math.max(1, this.data.highestLevelByTheme[theme.id] || 1);
+      this.data.bestByTheme[theme.id] = this.data.bestByTheme[theme.id] || {};
+      this.data.activeThemeId = theme.id;
+      newest = theme;
+    }
+    return newest;
+  }
+
+  _ensureDailyTasks(date) {
+    const key = dayKey(date || new Date());
+    if (this.data.dailyTaskDate === key) return;
+    this.data.dailyTaskDate = key;
+    this.data.dailyTaskProgress = { play: 0, win: 0, combo: 0 };
+    this.data.dailyTaskCompleted = {};
+  }
+
+  _recordDailyTasks(result) {
+    this._ensureDailyTasks();
+    const progress = this.data.dailyTaskProgress;
+    progress.play = normalizePoints(progress.play) + 1;
+    if (result.status === 'won') progress.win = normalizePoints(progress.win) + 1;
+    progress.combo = Math.max(normalizePoints(progress.combo), normalizePoints(result.bestCombo));
+    let stamps = 0;
+    let rescueTicketBonus = 0;
+    let activityReward = false;
+    DAILY_TASKS.forEach((task) => {
+      if (this.data.dailyTaskCompleted[task.id] || normalizePoints(progress[task.id]) < task.target) return;
+      this.data.dailyTaskCompleted[task.id] = true;
+      stamps += 1;
+      this.data.activityStamps = normalizePoints(this.data.activityStamps) + 1;
+      if (this.data.activityStamps >= 7) {
+        this.data.activityStamps = 0;
+        this.data.activityCycles = normalizePoints(this.data.activityCycles) + 1;
+        rescueTicketBonus += this.addRescueTickets(1, false);
+        activityReward = true;
+      }
+    });
+    return { stamps, rescueTicketBonus, activityReward };
+  }
+
+  getDailyTaskStatus(date) {
+    this._ensureDailyTasks(date);
+    const progress = this.data.dailyTaskProgress || {};
+    const tasks = DAILY_TASKS.map((task) => ({
+      id: task.id,
+      label: task.label,
+      target: task.target,
+      progress: Math.min(task.target, normalizePoints(progress[task.id])),
+      completed: Boolean(this.data.dailyTaskCompleted && this.data.dailyTaskCompleted[task.id])
+    }));
+    return {
+      dateKey: this.data.dailyTaskDate,
+      tasks,
+      nearest: tasks.find((task) => !task.completed) || null,
+      stamps: normalizePoints(this.data.activityStamps),
+      cycles: normalizePoints(this.data.activityCycles)
+    };
+  }
+
+  _recordPersonalRecords(result) {
+    const records = this.data.personalRecords || (this.data.personalRecords = {});
+    records.bestCombo = Math.max(normalizePoints(records.bestCombo), normalizePoints(result.bestCombo));
+    records.bestWinStreak = Math.max(normalizePoints(records.bestWinStreak), normalizePoints(this.data.winStreak));
+    records.bestDailyScore = Math.max(normalizePoints(records.bestDailyScore), result.daily ? normalizePoints(result.score) : 0);
+    if (result.status === 'won' && !result.daily) {
+      const elapsed = normalizePoints(result.elapsedMs);
+      if (elapsed > 0 && (!records.fastestClearMs || elapsed < records.fastestClearMs)) records.fastestClearMs = elapsed;
+      records.endlessWave = Math.max(normalizePoints(records.endlessWave), Math.max(0, normalizePoints(result.level) - 60));
+    }
+  }
+
+  chooseWarehouseDecoration(style) {
+    const node = normalizePoints(this.data.pendingDecorationNode);
+    if (!node || node > 10) return false;
+    const choice = style === 'fresh' ? 'fresh' : 'warm';
+    if (!Array.isArray(this.data.warehouseDecorations)) this.data.warehouseDecorations = [];
+    const existing = this.data.warehouseDecorations.findIndex((entry) => normalizePoints(entry && entry.node) === node);
+    if (existing >= 0) this.data.warehouseDecorations[existing] = { node, style: choice };
+    else this.data.warehouseDecorations.push({ node, style: choice });
+    this.data.warehouseDecorations = normalizeWarehouseDecorations(this.data.warehouseDecorations);
+    this.data.warehouseStyle = choice;
+    this.data.pendingDecorationNode = 0;
+    this.save();
+    return true;
+  }
+
+  setWarehouseStyle(style) {
+    const choice = style === 'fresh' ? 'fresh' : 'warm';
+    const decorations = normalizeWarehouseDecorations(this.data.warehouseDecorations);
+    if (!decorations.some((entry) => entry.style === choice)) return false;
+    this.data.warehouseDecorations = decorations;
+    this.data.warehouseStyle = choice;
+    this.save();
+    return true;
+  }
+
+  claimTruckChestUpgrade() {
+    this.data.upgradedTruckChests = normalizePoints(this.data.upgradedTruckChests) + 1;
+    this._creditCoins(60);
+    this.save();
+    return 60;
   }
 
   claimDailyLogin(date) {
@@ -373,7 +570,7 @@ class Storage {
       const collectible = COLLECTIBLE_MAP[item.id];
       const entry = this.data.rareFruits[item.id];
       const count = Math.max(1, Math.floor(Number(item.count) || 1));
-      if (!collectible || !entry || getOwnedCount(entry) < count) {
+      if (!collectible || !entry || getOwnedCount(entry) - count < 1) {
         return { sold: false, reason: 'inventory', coins: 0, id: item.id || '' };
       }
       coins += getCollectibleSellValue(collectible) * count;
@@ -459,19 +656,7 @@ class Storage {
   }
 
   buyPauseTickets(quantity) {
-    const amount = normalizePurchaseQuantity(quantity);
-    const owned = this.getPauseTicketCount();
-    if (owned + amount > MAX_PAUSE_TICKETS) {
-      return { bought: false, reason: 'max', cost: PAUSE_TICKET_STORE_COST, count: owned, maxOwned: MAX_PAUSE_TICKETS };
-    }
-    const totalCost = PAUSE_TICKET_STORE_COST * amount;
-    if (this.data.coins < totalCost) {
-      return { bought: false, reason: 'coins', cost: totalCost, unitCost: PAUSE_TICKET_STORE_COST };
-    }
-    this.data.coins -= totalCost;
-    this.data.pauseTickets = owned + amount;
-    this.save();
-    return { bought: true, quantity: amount, cost: totalCost, unitCost: PAUSE_TICKET_STORE_COST, count: this.data.pauseTickets };
+    return { bought: false, reason: 'free_pause', cost: 0, count: 0, maxOwned: 0 };
   }
 
   buyStoreProduct(id, quantity) {
@@ -509,10 +694,9 @@ class Storage {
 
   creditMatchedItem(points, coins) {
     const gainedPoints = normalizePoints(points);
-    const gainedCoins = normalizePoints(coins);
-    if (!gainedPoints && !gainedCoins) return { points: 0, coins: 0, totalPoints: getTotalPoints(this.data) };
+    const gainedCoins = 0;
+    if (!gainedPoints) return { points: 0, coins: 0, totalPoints: getTotalPoints(this.data) };
     this.data.adventurePoints += gainedPoints;
-    this._creditCoins(gainedCoins);
     this.save();
     return { points: gainedPoints, coins: gainedCoins, totalPoints: getTotalPoints(this.data) };
   }
@@ -534,7 +718,20 @@ class Storage {
     return { unlocked: true, slots: this.data.bufferSlotsUnlocked, cost };
   }
 
-  spendRescueTicket() {
+  getRescueStatus(level) {
+    const newcomer = Math.max(0, Math.floor(Number(level) || 0)) <= 5
+      ? Math.min(2, normalizePoints(this.data.newcomerRescues))
+      : 0;
+    return { newcomer, tickets: clampTickets(this.data.rescueTickets), total: newcomer + clampTickets(this.data.rescueTickets) };
+  }
+
+  spendRescueTicket(level) {
+    const status = this.getRescueStatus(level);
+    if (status.newcomer > 0) {
+      this.data.newcomerRescues = Math.max(0, normalizePoints(this.data.newcomerRescues) - 1);
+      this.save();
+      return true;
+    }
     if ((this.data.rescueTickets || 0) <= 0) return false;
     this.data.rescueTickets -= 1;
     this.save();
@@ -556,7 +753,7 @@ class Storage {
     if (!collectible) return null;
     const current = this.data.rareFruits[id] || null;
     const discoveredBefore = countAllDiscoveredCollectibles(this.data.rareFruits);
-    const rankBefore = getPointRank(this.data.coins);
+    const rankBefore = getPointRank(getTotalPoints(this.data));
     const now = Date.now();
     const entry = {
       count: (current && current.count || 0) + 1,
@@ -574,31 +771,27 @@ class Storage {
     this.data.collectionPoints += points;
     let rescueTicketBonus = 0;
     const discoveredAfter = discoveredBefore + (!current ? 1 : 0);
-    if (!current && discoveredAfter % 10 === 0) rescueTicketBonus = this.addRescueTickets(1, false);
+    if (!current && discoveredAfter % 20 === 0) rescueTicketBonus = this.addRescueTickets(1, false);
 
     const themeProgress = getThemeProgress(collectible.themeId, this.data.rareFruits);
-    let unlockedTheme = null;
+    const unlockedTheme = null;
+    let cosmeticTitle = '';
     if (!current && themeProgress.complete) {
-      const nextTheme = getNextTheme(collectible.themeId);
-      const themeIndex = THEMES.findIndex((theme) => theme.id === collectible.themeId);
-      const previousComplete = THEMES.slice(0, themeIndex + 1).every((theme) => isThemeComplete(theme.id, this.data.rareFruits));
-      if (nextTheme && previousComplete && this.data.unlockedThemes.indexOf(nextTheme.id) < 0) {
-        this.data.unlockedThemes.push(nextTheme.id);
-        this.data.activeThemeId = nextTheme.id;
-        this.data.highestLevelByTheme[nextTheme.id] = Math.max(1, this.data.highestLevelByTheme[nextTheme.id] || 1);
-        this.data.bestByTheme[nextTheme.id] = this.data.bestByTheme[nextTheme.id] || {};
-        unlockedTheme = nextTheme;
-      }
+      cosmeticTitle = `${getTheme(collectible.themeId).shortName}馆长`;
+      if (this.data.cosmeticTitles.indexOf(cosmeticTitle) < 0) this.data.cosmeticTitles.push(cosmeticTitle);
     }
 
     const totalPoints = getTotalPoints(this.data);
-    const rankAfter = getPointRank(this.data.coins);
+    const rankAfter = getPointRank(totalPoints);
+    const coinRule = COLLECTIBLE_COIN_REWARDS[collectible.rarity] || COLLECTIBLE_COIN_REWARDS.rare;
+    const coinBonus = current ? coinRule.duplicate : coinRule.first;
     this.save();
     return {
       isNew: !current,
       count: entry.count,
       entry,
       points,
+      coinBonus,
       collectionPoints: this.data.collectionPoints,
       fruitPoints: this.data.collectionPoints,
       totalPoints,
@@ -608,6 +801,7 @@ class Storage {
       rankUp: rankAfter.index > rankBefore.index,
       themeProgress,
       themeCompleted: !current && themeProgress.complete,
+      cosmeticTitle,
       unlockedTheme
     };
   }
@@ -617,10 +811,23 @@ class Storage {
   }
 
   setPreference(key, value) {
-    if (key !== 'soundEnabled' && key !== 'musicEnabled') return;
+    if (key !== 'soundEnabled' && key !== 'musicEnabled' && key !== 'reducedMotion') return;
     this.data[key] = Boolean(value);
     this.save();
   }
+}
+
+function normalizeWarehouseDecorations(source) {
+  const byNode = Object.create(null);
+  (Array.isArray(source) ? source : []).forEach((entry) => {
+    const node = Math.min(10, normalizePoints(entry && entry.node));
+    if (!node) return;
+    byNode[node] = { node, style: entry && entry.style === 'fresh' ? 'fresh' : 'warm' };
+  });
+  return Object.keys(byNode)
+    .map((node) => byNode[node])
+    .sort((a, b) => a.node - b.node)
+    .slice(0, 10);
 }
 
 function cloneDefault() {
@@ -632,6 +839,11 @@ function cloneDefault() {
     lastCollectibleRollKeyByTheme: {},
     seenMechanics: {},
     boosterVouchers: normalizeVouchers(),
+    dailyTaskProgress: { play: 0, win: 0, combo: 0 },
+    dailyTaskCompleted: {},
+    personalRecords: Object.assign({}, DEFAULT_DATA.personalRecords),
+    warehouseDecorations: [],
+    cosmeticTitles: [],
     bestByLevel: {},
     rareFruits: {}
   });
@@ -668,7 +880,7 @@ function cloneBestByTheme(source) {
   return result;
 }
 
-function normalizeUnlockedThemes(source, collection) {
+function normalizeUnlockedThemes(source, collection, firstClearCount, allowLegacyCollectionUnlock) {
   const requested = Array.isArray(source) ? source : [];
   const unlocked = ['fruit'];
   // 早期存档只有 5 个主题。升级后如果旧存档已经开启了后段主题，补齐它
@@ -677,10 +889,11 @@ function normalizeUnlockedThemes(source, collection) {
     const index = THEMES.findIndex((theme) => theme.id === themeId);
     return Math.max(highest, index);
   }, 0);
+  const progressionIndex = Math.min(THEMES.length - 1, Math.floor(normalizePoints(firstClearCount) / 20));
   for (let i = 1; i < THEMES.length; i += 1) {
     const previous = THEMES[i - 1];
     const theme = THEMES[i];
-    if (i <= highestRequestedIndex || requested.indexOf(theme.id) >= 0 || isThemeComplete(previous.id, collection)) unlocked.push(theme.id);
+    if (i <= Math.max(highestRequestedIndex, progressionIndex) || requested.indexOf(theme.id) >= 0 || (allowLegacyCollectionUnlock && isThemeComplete(previous.id, collection))) unlocked.push(theme.id);
     else break;
   }
   return unlocked;
@@ -704,7 +917,7 @@ function clampTickets(value) {
 }
 
 function clampPauseTickets(value) {
-  return Math.min(MAX_PAUSE_TICKETS, Math.max(0, Math.floor(Number(value) || 0)));
+  return 0;
 }
 
 function normalizePurchaseQuantity(value) {
@@ -731,8 +944,22 @@ function estimateLegacyAdventurePoints(raw) {
   return Math.max(0, (highest - 1) * 120 + stars * 40 + boxes * 8);
 }
 
+function estimateFirstClearCount(data) {
+  const bestByTheme = data && data.bestByTheme || {};
+  let cleared = 0;
+  Object.keys(bestByTheme).forEach((themeId) => {
+    cleared += Object.keys(bestByTheme[themeId] || {}).filter((level) => (
+      bestByTheme[themeId][level] && bestByTheme[themeId][level].cleared !== false
+    )).length;
+  });
+  const levels = Object.values(data && data.highestLevelByTheme || {});
+  const highestProgress = Math.max(0, ...levels.map((value) => Math.max(0, Math.floor(Number(value) || 1) - 1)));
+  return Math.max(cleared, highestProgress);
+}
+
 module.exports = {
   DEFAULT_DATA,
+  DAILY_TASKS,
   MAX_RESCUE_TICKETS,
   Storage
 };

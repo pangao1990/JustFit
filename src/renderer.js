@@ -28,7 +28,7 @@ const {
   getThemeProgress,
   getVisibleCollectionEntries
 } = require('./theme-collectibles');
-const { formatPoints, getJourneyInfo, getPointRank } = require('./progression');
+const { formatPoints, getJourneyInfo, getPointRank, getTotalPoints } = require('./progression');
 const { getTheme, getVisibleThemes } = require('./themes');
 const { clamp, dayKey, easeOutBack, easeOutCubic, formatTime, lerp } = require('./utils');
 
@@ -45,13 +45,17 @@ const MECHANIC_TIP_ICONS = Object.freeze({
   shelf_shift: ['shuffle', 'box'],
   collectible: ['sparkle', 'clock'],
   collection_target: ['sparkle', 'coin'],
-  frozen_item: ['clock', 'warning'],
-  drain_item: ['clock', 'time'],
+  sealed_item: ['tap', 'box'],
   time_bonus_item: ['time', 'box'],
   sweep_item: ['auto', 'box'],
   triple_targets: ['box', 'warning'],
   bomb_item: ['warning', 'hint'],
-  rush_target: ['clock', 'score']
+  rush_target: ['clock', 'score'],
+  horizontal_conveyor: ['route', 'tap'],
+  vertical_bob: ['route', 'tap'],
+  lane_swap: ['warning', 'tap'],
+  sequence_orders: ['key', 'box'],
+  carousel: ['route', 'shield']
 });
 
 class Renderer {
@@ -68,7 +72,12 @@ class Renderer {
     this.effects = [];
     this.floatingTexts = [];
     this.hintStack = -1;
+    this.hintStacks = [];
     this.hintUntil = 0;
+    this.animationMs = 0;
+    this.motionPaused = false;
+    this.reducedMotion = false;
+    this.boardInputBlocked = false;
     this.shake = 0;
     this.toast = null;
     this.rareImages = {};
@@ -121,7 +130,16 @@ class Renderer {
 
   showHint(stackIndex) {
     this.hintStack = stackIndex;
+    this.hintStacks = stackIndex >= 0 ? [stackIndex] : [];
     this.hintUntil = Date.now() + 2300;
+  }
+
+  showHints(stackIndices) {
+    this.hintStacks = (Array.isArray(stackIndices) ? stackIndices : []).filter((value, index, list) => (
+      value >= 0 && list.indexOf(value) === index
+    )).slice(0, 3);
+    this.hintStack = this.hintStacks[0] == null ? -1 : this.hintStacks[0];
+    this.hintUntil = Date.now() + 2600;
   }
 
   showToast(text, color) {
@@ -136,6 +154,7 @@ class Renderer {
     this.effects = [];
     this.floatingTexts = [];
     this.hintStack = -1;
+    this.hintStacks = [];
     this.hintUntil = 0;
     this.shake = 0;
     this.toast = null;
@@ -190,6 +209,7 @@ class Renderer {
   }
 
   update(deltaMs) {
+    if (!this.motionPaused) this.animationMs += Math.max(0, Number(deltaMs) || 0);
     const dt = Math.min(0.05, deltaMs / 1000);
     this.effects.forEach((effect) => {
       effect.life -= deltaMs;
@@ -211,12 +231,21 @@ class Renderer {
       if (this.toast.life <= 0) this.toast = null;
     }
     this.shake = Math.max(0, this.shake - deltaMs * 0.035);
-    if (Date.now() >= this.hintUntil) this.hintStack = -1;
+    if (Date.now() >= this.hintUntil) {
+      this.hintStack = -1;
+      this.hintStacks = [];
+    }
   }
 
   draw(view, model, saveData) {
     const ctx = this.ctx;
     this.regions = [];
+    this.motionPaused = Boolean(
+      view && (view.overlay != null || view.helpOpen || view.featureIntro || view.storeSaleOffer ||
+      view.storePurchaseOffer || view.revivePanel || view.boosterChoice || view.missedCollectible ||
+      view.decorationChoice || view.baseDecorOpen || view.adPlaying)
+    );
+    this.reducedMotion = Boolean(saveData && saveData.reducedMotion);
     ctx.setTransform(this.scale, 0, 0, this.scale, 0, 0);
     ctx.clearRect(0, 0, this.width, this.height);
     ctx.save();
@@ -236,9 +265,13 @@ class Renderer {
     if (view.featureIntro) this.drawFeatureIntro(ctx, view.featureIntro);
     if (view.storeSaleOffer) this.drawStoreSaleOffer(ctx, view.storeSaleOffer);
     if (view.storePurchaseOffer) this.drawStorePurchaseOffer(ctx, view.storePurchaseOffer, saveData);
-    if (view.revivePanel === 'choice') this.drawReviveChoice(ctx, saveData, view.rewardAvailable);
+    if (view.revivePanel === 'choice') this.drawReviveChoice(ctx, saveData, view.rewardAvailable, view);
     else if (view.revivePanel === 'exchange') this.drawReviveExchange(ctx, view.reviveExchangeOffer);
     else if (view.revivePanel === 'guide') this.drawReviveSellGuide(ctx);
+    if (view.boosterChoice) this.drawBoosterChoice(ctx, view.boosterChoice);
+    if (view.missedCollectible) this.drawCollectibleRecovery(ctx, view.missedCollectible, saveData);
+    if (view.decorationChoice) this.drawDecorationChoice(ctx, view.decorationChoice);
+    if (view.baseDecorOpen) this.drawBaseDecorPanel(ctx, saveData);
 
     this.drawEffects(ctx);
     this.drawToast(ctx, view);
@@ -246,10 +279,16 @@ class Renderer {
   }
 
   drawBackground(ctx, saveData, view) {
+    const decorations = Array.isArray(saveData && saveData.warehouseDecorations)
+      ? saveData.warehouseDecorations.slice(0, 10)
+      : [];
+    const decorated = decorations.length > 0;
+    const baseVisible = decorated && view && view.screen === 'home';
+    const fresh = baseVisible && saveData.warehouseStyle === 'fresh';
     const gradient = ctx.createLinearGradient(0, 0, 0, this.height);
-    gradient.addColorStop(0, '#DFF7F3');
-    gradient.addColorStop(0.46, '#FFF3D8');
-    gradient.addColorStop(1, '#F7D9BE');
+    gradient.addColorStop(0, fresh ? '#D6F7F1' : (baseVisible ? '#F8E6D0' : '#DFF7F3'));
+    gradient.addColorStop(0.46, fresh ? '#F3F9DD' : '#FFF3D8');
+    gradient.addColorStop(1, fresh ? '#DCEFE4' : '#F7D9BE');
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, this.width, this.height);
 
@@ -264,8 +303,9 @@ class Renderer {
     }
     ctx.globalAlpha = 1;
 
-    // 背景只承担氛围，不再绘制货架、立柱、灯具等可识别物件，
-    // 避免它们从卡片两侧露出并与真正可操作内容争抢注意力。
+    if (baseVisible) {
+      drawBaseDecorationBackdrop(ctx, this.width, this.safeTop, decorations, fresh, true);
+    }
   }
 
   drawHome(ctx, view, saveData) {
@@ -273,7 +313,7 @@ class Renderer {
     const compact = this.height < 1450;
     const heroTop = this.safeTop + (compact ? 34 : 54);
     const coins = Math.max(0, Math.floor(Number(saveData.coins) || 0));
-    const pointRank = getPointRank(coins);
+    const pointRank = getPointRank(getTotalPoints(saveData));
     const activeThemeId = saveData.activeThemeId || 'fruit';
     const activeTheme = getTheme(activeThemeId);
     const activeLevel = saveData.highestLevelByTheme && saveData.highestLevelByTheme[activeThemeId] || saveData.highestLevel || 1;
@@ -330,16 +370,16 @@ class Renderer {
     }
     if (dailyUnlocked || rankUnlocked) {
       if (dailyUnlocked && rankUnlocked) {
-        drawSmallButton(ctx, 92, buttonY, 270, 82, dailyClaimedToday ? '今日挑战 ✓' : '今日挑战 +60', '日', CONFIG.COLORS.teal, CONFIG.COLORS.tealDark);
+        drawSmallButton(ctx, 92, buttonY, 270, 82, dailyClaimedToday ? '今日挑战 ✓' : '今日挑战 +25', '日', CONFIG.COLORS.teal, CONFIG.COLORS.tealDark);
         drawSmallButton(ctx, 388, buttonY, 270, 82, '好友榜', '榜', '#9277E5', '#7458C7');
         this.addRegion('daily', 92, buttonY, 270, 82);
         this.addRegion('friend_rank', 388, buttonY, 270, 82);
         if (!saveData.seenMechanics || !saveData.seenMechanics.daily_mode) drawNewBadge(ctx, 342, buttonY + 8);
       } else if (dailyUnlocked) {
-        drawHomeFeatureTile(ctx, 92, buttonY, 566, 86, 'daily', '今日挑战', dailyClaimedToday ? '首胜已领取' : '首胜 +60 金币', CONFIG.COLORS.teal);
+        drawHomeFeatureTile(ctx, 92, buttonY, 566, 86, 'daily', '今日挑战', dailyClaimedToday ? '首胜已领取' : '首胜 +25 金币', CONFIG.COLORS.teal);
         this.addRegion('daily', 92, buttonY, 566, 86);
       } else {
-        drawHomeFeatureTile(ctx, 92, buttonY, 566, 86, 'rank', '好友榜', '金币 / 藏品', '#9277E5');
+        drawHomeFeatureTile(ctx, 92, buttonY, 566, 86, 'rank', '好友榜', '总成绩 / 藏品', '#9277E5');
         this.addRegion('friend_rank', 92, buttonY, 566, 86);
       }
       buttonY += 100;
@@ -360,7 +400,14 @@ class Renderer {
     }
 
     if (dailyUnlocked) {
-      drawStreakChest(ctx, 92, buttonY, 566, 78, saveData.winStreak || 0);
+      drawNearestGoal(ctx, 92, buttonY, 566, 78, saveData);
+      buttonY += 94;
+    }
+
+    const baseDecorations = Array.isArray(saveData.warehouseDecorations) ? saveData.warehouseDecorations : [];
+    if (baseDecorations.length) {
+      drawBaseDecorHomeTile(ctx, 92, buttonY, 566, 78, saveData);
+      this.addRegion('base_decor_open', 92, buttonY, 566, 78);
       buttonY += 94;
     }
 
@@ -430,34 +477,61 @@ class Renderer {
   }
 
   drawFriendRank(ctx, view, saveData) {
-    const headerY = this.safeTop + 8;
+    const layout = this.getFriendRankViewport();
+    const headerY = layout.headerY;
     drawCircleButton(ctx, 54, headerY + 39, 52, '‹', true);
     this.addRegion('back_home', 28, headerY + 13, 52, 52);
-    drawText(ctx, '装满这一箱 · 微信好友榜', 100, headerY + 42, 31, CONFIG.COLORS.ink, 'left', 950);
+    drawText(ctx, '装满这一箱 · 微信好友榜', 100, headerY + 42, 31, CONFIG.COLORS.ink, 'left', 950, 572);
 
-    const metric = view.friendRankMetric === 'collection_count' ? 'collection_count' : 'coins';
-    const tabY = headerY + 82;
-    drawRankTab(ctx, 66, tabY, 300, 86, '金币', formatPoints(saveData.coins || 0), metric === 'coins', CONFIG.COLORS.goldDark);
+    const metric = view.friendRankMetric === 'collection_count' ? 'collection_count' : 'total_points';
+    const tabY = layout.tabY;
+    drawRankTab(ctx, 66, tabY, 300, 86, '总成绩', formatPoints(getTotalPoints(saveData)), metric === 'total_points', CONFIG.COLORS.goldDark);
     drawRankTab(ctx, 384, tabY, 300, 86, '藏品数', String(countAllDiscoveredCollectibles(saveData.rareFruits)), metric === 'collection_count', '#278F82');
     this.addRegion('friend_rank_score', 66, tabY, 300, 86);
     this.addRegion('friend_rank_collection', 384, tabY, 300, 86);
 
-    const shareY = this.height - this.safeBottom - 122;
-    const panelY = tabY + 108;
-    const panelH = Math.max(470, shareY - panelY - 24);
+    const shareY = layout.shareY;
+    const panelY = layout.panelY;
+    const panelH = layout.panelHeight;
     drawCard(ctx, 48, panelY, 654, panelH, 34, 'rgba(255,255,255,0.82)', 'rgba(255,255,255,0.76)', 14);
     if (view.friendRankAvailable && view.friendRankCanvas) {
       try {
-        ctx.drawImage(view.friendRankCanvas, 68, panelY + 18, 614, panelH - 36);
+        drawImageContained(
+          ctx,
+          view.friendRankCanvas,
+          layout.viewportX,
+          layout.viewportY,
+          layout.viewportWidth,
+          layout.viewportHeight
+        );
       } catch (_) {
-        drawFriendRankFallback(ctx, 68, panelY + 18, 614, panelH - 36, metric, saveData);
+        drawFriendRankFallback(ctx, layout.viewportX, layout.viewportY, layout.viewportWidth, layout.viewportHeight, metric, saveData);
       }
     } else {
-      drawFriendRankFallback(ctx, 68, panelY + 18, 614, panelH - 36, metric, saveData);
+      drawFriendRankFallback(ctx, layout.viewportX, layout.viewportY, layout.viewportWidth, layout.viewportHeight, metric, saveData);
     }
 
     drawButton(ctx, 126, shareY, 498, 76, '邀请好友来上榜', '', 'share', '#9277E5', '#7458C7');
     this.addRegion('share', 126, shareY, 498, 76, { source: 'friend_rank' });
+  }
+
+  getFriendRankViewport() {
+    const headerY = this.safeTop + 8;
+    const tabY = headerY + 82;
+    const shareY = this.height - this.safeBottom - 122;
+    const panelY = tabY + 108;
+    const panelHeight = Math.max(470, shareY - panelY - 24);
+    return {
+      headerY,
+      tabY,
+      shareY,
+      panelY,
+      panelHeight,
+      viewportX: 68,
+      viewportY: panelY + 18,
+      viewportWidth: 614,
+      viewportHeight: Math.max(434, panelHeight - 36)
+    };
   }
 
   drawFruitShop(ctx, view, saveData) {
@@ -590,14 +664,13 @@ class Renderer {
     const vouchers = saveData.boosterVouchers || {};
     const ownedById = {
       rescue_ticket: saveData.rescueTickets || 0,
-      pause_ticket: saveData.pauseTickets || 0,
       voucher_hint: vouchers.hint || 0,
       voucher_shuffle: vouchers.shuffle || 0,
       voucher_add_time: vouchers.add_time || 0,
       voucher_auto_pack: vouchers.auto_pack || 0
     };
     const products = [
-      'rescue_ticket', 'pause_ticket', 'voucher_hint', 'voucher_shuffle', 'voucher_add_time', 'voucher_auto_pack'
+      'rescue_ticket', 'voucher_hint', 'voucher_shuffle', 'voucher_add_time', 'voucher_auto_pack'
     ].map((id) => {
       const definition = STORE_PRODUCT_DEFINITIONS[id];
       const owned = ownedById[id] || 0;
@@ -639,7 +712,7 @@ class Renderer {
 
     if (feature === 'daily') {
       drawModeCompareCard(ctx, 100, y + 128, 260, 244, 'route', '主线', '推进关卡', '解锁主题', CONFIG.COLORS.coral);
-      drawModeCompareCard(ctx, 390, y + 128, 260, 244, 'calendar', '今日', '每日同题', '首胜 +60', CONFIG.COLORS.teal);
+      drawModeCompareCard(ctx, 390, y + 128, 260, 244, 'calendar', '今日', '每日同题', '首胜 +25', CONFIG.COLORS.teal);
     } else if (feature === 'museum') {
       drawIntroFlowNode(ctx, 190, y + 238, 108, 'sparkle', '#9277E5');
       drawFlowArrow(ctx, 260, y + 238, 238, '#9E96A8');
@@ -724,7 +797,7 @@ class Renderer {
     this.addRegion('store_purchase_confirm', 386, buttonY, 258, 70);
   }
 
-  drawReviveChoice(ctx, saveData, rewardAvailable) {
+  drawReviveChoice(ctx, saveData, rewardAvailable, view) {
     drawModalMask(ctx, this.width, this.height, 0.58);
     const h = 590;
     const y = (this.height - h) / 2;
@@ -733,7 +806,8 @@ class Renderer {
     drawPill(ctx, this.width / 2 - 70, y + 86, 140, 40, '每局 ×1', 'rgba(61,49,82,0.05)', CONFIG.COLORS.mutedInk, 17);
 
     const optionY = y + 140;
-    drawReviveOptionCard(ctx, 84, optionY, 182, 270, 'ticket', '救援券', `×${saveData.rescueTickets || 0}`, CONFIG.COLORS.coral, (saveData.rescueTickets || 0) > 0);
+    const rescueTotal = (saveData.rescueTickets || 0) + (view && view.reviveEligibleNewcomer || 0);
+    drawReviveOptionCard(ctx, 84, optionY, 182, 270, 'ticket', view && view.reviveEligibleNewcomer ? '免费救援' : '救援券', `×${rescueTotal}`, CONFIG.COLORS.coral, rescueTotal > 0);
     drawReviveOptionCard(ctx, 284, optionY, 182, 270, 'video', '视频', rewardAvailable ? '▶' : '待开通', '#9277E5', rewardAvailable);
     drawReviveOptionCard(ctx, 484, optionY, 182, 270, 'coin', '金币', String(REVIVE_COIN_COST), CONFIG.COLORS.goldDark, true);
     this.addRegion('revive_ticket', 84, optionY, 182, 270);
@@ -799,6 +873,100 @@ class Renderer {
     this.addRegion('revive_go_store', 386, y + 438, 258, 78);
   }
 
+  drawBoosterChoice(ctx, offer) {
+    if (!offer) return;
+    const copy = {
+      hint: { title: '使用提示', coin: '标出 1 个安全目标', ad: '标出 3 个安全目标', icon: 'hint', color: '#D99D2D' },
+      shuffle: { title: '整理货架', coin: '重新排列顶层货物', ad: '免费观看并整理', icon: 'shuffle', color: '#D97846' },
+      add_time: { title: '补充时间', coin: '关卡时间 +15 秒', ad: '关卡时间 +20 秒', icon: 'time', color: '#278F82' },
+      auto_pack: { title: '自动装箱', coin: '安全装入最多 4 件', ad: '直接装满 1 箱并保留连击', icon: 'auto', color: '#7458C7' }
+    }[offer.type];
+    if (!copy) return;
+    drawModalMask(ctx, this.width, this.height, 0.58);
+    const h = 610;
+    const y = (this.height - h) / 2;
+    drawCard(ctx, 64, y, 622, h, 44, '#FFFDF8', 'rgba(255,255,255,0.88)', 30);
+    drawCircleButton(ctx, 646, y + 42, 46, '×', true);
+    this.addRegion('booster_cancel', 623, y + 19, 46, 46);
+    drawIntroFlowNode(ctx, this.width / 2, y + 126, 96, copy.icon, copy.color);
+    drawText(ctx, copy.title, this.width / 2, y + 215, 37, CONFIG.COLORS.ink, 'center', 950);
+    drawText(ctx, '请选择本次消耗，不会自动扣金币', this.width / 2, y + 254, 19, CONFIG.COLORS.mutedInk, 'center', 750);
+
+    const cardY = y + 294;
+    drawChoicePaymentCard(ctx, 88, cardY, 272, 186, 'coin', `${offer.cost} 金币`, copy.coin, CONFIG.COLORS.goldDark, offer.coins >= offer.cost);
+    drawChoicePaymentCard(ctx, 390, cardY, 272, 186, 'video', '看完整视频', copy.ad, '#7458C7', offer.rewardAvailable);
+    this.addRegion('booster_coin', 88, cardY, 272, 186);
+    this.addRegion('booster_ad', 390, cardY, 272, 186);
+    drawButton(ctx, 170, y + 512, 410, 68, '暂时不用', '', 'home', '#FFFFFF', '#D7C9BC', CONFIG.COLORS.ink);
+    this.addRegion('booster_cancel', 170, y + 512, 410, 68);
+  }
+
+  drawCollectibleRecovery(ctx, offer, saveData) {
+    const collectible = offer && offer.collectible;
+    if (!collectible) return;
+    drawModalMask(ctx, this.width, this.height, 0.6);
+    const h = 660;
+    const y = (this.height - h) / 2;
+    drawCard(ctx, 62, y, 626, h, 44, '#FFFDF8', 'rgba(255,255,255,0.9)', 30);
+    drawText(ctx, '闪耀藏品飞走了', this.width / 2, y + 70, 37, CONFIG.COLORS.ink, 'center', 950);
+    drawCollectibleVisual(ctx, collectible, this.rareImages[collectible.id], this.width / 2, y + 208, 174);
+    drawText(ctx, collectible.name, this.width / 2, y + 316, 27, collectible.color, 'center', 900);
+    drawText(ctx, '本次仍可追回，也可以直接继续游戏', this.width / 2, y + 354, 19, CONFIG.COLORS.mutedInk, 'center', 750);
+    const optionY = y + 390;
+    drawChoicePaymentCard(ctx, 88, optionY, 272, 146, 'coin', '400 金币', '立即收入藏馆', CONFIG.COLORS.goldDark, (saveData.coins || 0) >= 400);
+    drawChoicePaymentCard(ctx, 390, optionY, 272, 146, 'video', '看完整视频', '免费追回', '#7458C7', offer.rewardAvailable);
+    this.addRegion('collectible_recover_coin', 88, optionY, 272, 146);
+    this.addRegion('collectible_recover_ad', 390, optionY, 272, 146);
+    drawButton(ctx, 170, y + 560, 410, 68, '这次放弃，继续游戏', '', 'play', '#FFFFFF', '#D7C9BC', CONFIG.COLORS.ink);
+    this.addRegion('collectible_recover_skip', 170, y + 560, 410, 68);
+  }
+
+  drawDecorationChoice(ctx, node) {
+    drawModalMask(ctx, this.width, this.height, 0.62);
+    const h = 700;
+    const y = (this.height - h) / 2;
+    drawCard(ctx, 62, y, 626, h, 44, '#FFFDF8', 'rgba(255,255,255,0.9)', 30);
+    drawText(ctx, `装箱基地装饰 ${node}/10`, this.width / 2, y + 70, 37, CONFIG.COLORS.ink, 'center', 950, 540);
+    drawText(ctx, `每累计 ${CONFIG.SHOP_NODE_STARS} 颗星解锁 1 次外观奖励`, this.width / 2, y + 111, 19, CONFIG.COLORS.mutedInk, 'center', 750, 540);
+    drawText(ctx, '选中后立即应用到首页背景', this.width / 2, y + 145, 19, CONFIG.COLORS.mutedInk, 'center', 750, 540);
+    drawDecorationCard(ctx, 88, y + 184, 272, 330, 'warm', '暖光木架', '#D8874E', '#FFF0D2', { actionText: '选择并应用' });
+    drawDecorationCard(ctx, 390, y + 184, 272, 330, 'fresh', '清新薄荷架', '#278F82', '#E7FAF6', { actionText: '选择并应用' });
+    this.addRegion('decoration_warm', 88, y + 184, 272, 330);
+    this.addRegion('decoration_fresh', 390, y + 184, 272, 330);
+    drawStatusChip(ctx, this.width / 2 - 180, y + 568, 360, 44, 'sparkle', '免费 · 永久保留 · 立即应用', CONFIG.COLORS.goldDark);
+    drawText(ctx, '以后可在首页“我的基地”查看和切换', this.width / 2, y + 658, 18, CONFIG.COLORS.mutedInk, 'center', 700, 520);
+  }
+
+  drawBaseDecorPanel(ctx, saveData) {
+    const decorations = Array.isArray(saveData && saveData.warehouseDecorations)
+      ? saveData.warehouseDecorations
+      : [];
+    const styles = new Set(decorations.map((entry) => entry && entry.style));
+    const active = saveData && saveData.warehouseStyle === 'fresh' ? 'fresh' : 'warm';
+    drawModalMask(ctx, this.width, this.height, 0.58);
+    const h = 700;
+    const y = (this.height - h) / 2;
+    drawCard(ctx, 62, y, 626, h, 44, '#FFFDF8', 'rgba(255,255,255,0.9)', 30);
+    drawCircleButton(ctx, 646, y + 42, 46, '×', true);
+    this.addRegion('base_decor_close', 623, y + 19, 46, 46);
+    drawText(ctx, '我的装箱基地', this.width / 2, y + 70, 37, CONFIG.COLORS.ink, 'center', 950, 480);
+    drawText(ctx, `已获得 ${decorations.length}/10 个装饰，选择已解锁风格`, this.width / 2, y + 114, 19, CONFIG.COLORS.mutedInk, 'center', 750, 520);
+    drawText(ctx, '切换后会立即更新首页背景', this.width / 2, y + 148, 19, CONFIG.COLORS.mutedInk, 'center', 750, 520);
+    drawDecorationCard(ctx, 88, y + 184, 272, 330, 'warm', '暖光木架', '#D8874E', '#FFF0D2', {
+      unlocked: styles.has('warm'),
+      active: active === 'warm'
+    });
+    drawDecorationCard(ctx, 390, y + 184, 272, 330, 'fresh', '清新薄荷架', '#278F82', '#E7FAF6', {
+      unlocked: styles.has('fresh'),
+      active: active === 'fresh'
+    });
+    this.addRegion('base_decor_warm', 88, y + 184, 272, 330);
+    this.addRegion('base_decor_fresh', 390, y + 184, 272, 330);
+    const activeName = active === 'fresh' ? '清新薄荷架' : '暖光木架';
+    drawStatusChip(ctx, this.width / 2 - 166, y + 568, 332, 44, 'check', `首页正在使用：${activeName}`, active === 'fresh' ? '#278F82' : '#D8874E');
+    drawText(ctx, '继续收集星星，最多可保留 10 个装饰', this.width / 2, y + 658, 18, CONFIG.COLORS.mutedInk, 'center', 700, 520);
+  }
+
   drawRareDiscovery(ctx, discovery) {
     const collectible = discovery && (discovery.collectible || discovery.fruit);
     if (!collectible) return;
@@ -831,8 +999,7 @@ class Renderer {
       drawStatusChip(ctx, this.width / 2 - 72, y + 542, 144, 40, 'ticket', '+1', CONFIG.COLORS.coral);
     }
     if (discovery.themeCompleted) {
-      const unlockedName = discovery.unlockedTheme && discovery.unlockedTheme.name;
-      drawText(ctx, unlockedName ? `已开启 ${unlockedName}` : '全部主题完成', this.width / 2, y + 590, 22, theme.darkColor, 'center', 950);
+      drawText(ctx, `全收集称号 · ${discovery.cosmeticTitle || `${theme.shortName}馆长`}`, this.width / 2, y + 590, 22, theme.darkColor, 'center', 950);
     } else if (discovery.rankUp && discovery.rankAfter) {
       drawText(ctx, `晋升 ${discovery.rankAfter.name}`, this.width / 2, y + 590, 21, discovery.rankAfter.color, 'center', 900);
     }
@@ -854,7 +1021,8 @@ class Renderer {
     const progress = getThemeProgress(themeId, collection);
     const level = saveData.highestLevelByTheme && saveData.highestLevelByTheme[themeId] || 1;
     const coins = Math.max(0, Math.floor(Number(saveData.coins) || 0));
-    const pointRank = getPointRank(coins);
+    const totalPoints = getTotalPoints(saveData);
+    const pointRank = getPointRank(totalPoints);
     const gradient = ctx.createLinearGradient(0, 0, 1000, 800);
     gradient.addColorStop(0, theme.paleColor);
     gradient.addColorStop(0.52, '#FFF4D8');
@@ -863,7 +1031,7 @@ class Renderer {
     ctx.fillRect(0, 0, 1000, 800);
     drawText(ctx, `我的${theme.collectionName}`, 500, 88, 58, '#3D3152', 'center', 950);
     drawText(ctx, `${theme.name} · 已点亮 ${progress.discovered}/${progress.total} · 馆藏价值 ${formatPoints(getCollectionValue(collection))} 金币`, 500, 132, 27, '#756A84', 'center', 700);
-    drawPill(ctx, 350, 145, 300, 44, `${pointRank.name} · ${formatPoints(coins)} 金币`, colorWithAlpha(pointRank.color, 0.13), pointRank.color, 21);
+    drawPill(ctx, 350, 145, 300, 44, `${pointRank.name} · ${formatPoints(totalPoints)} 分`, colorWithAlpha(pointRank.color, 0.13), pointRank.color, 21);
 
     getCollectionShowcase(collection, themeId, 8, level).forEach((showcaseEntry, index) => {
       const collectible = showcaseEntry.collectible;
@@ -905,8 +1073,7 @@ class Renderer {
     drawText(ctx, title, 180, headerY + 36, 23, CONFIG.COLORS.ink, 'left', 900, 254);
     drawFeatureGlyph(ctx, 'box', 190, headerY + 64, 22, journey.endless ? journey.color : CONFIG.COLORS.mutedInk);
     drawText(ctx, `${model.boxesCompleted}/${model.orderQueue.length}`, 212, headerY + 72, 19, journey.endless ? journey.color : CONFIG.COLORS.mutedInk, 'left', 850, 76);
-    const pauseStock = (view.freePausesRemaining || 0) + (saveData.pauseTickets || 0);
-    drawPill(ctx, 444, headerY + 18, 88, 42, `Ⅱ×${pauseStock}`, 'rgba(62,159,214,0.09)', '#3E9FD6', 16);
+    drawPill(ctx, 438, headerY + 18, 100, 42, 'Ⅱ 免费', 'rgba(62,159,214,0.09)', '#3E9FD6', 16);
 
     const timerColor = model.remainingMs <= 10000 ? CONFIG.COLORS.danger : CONFIG.COLORS.tealDark;
     drawTimerChip(ctx, 38, headerY + 82, 144, 50, formatTime(model.remainingMs), timerColor);
@@ -933,6 +1100,7 @@ class Renderer {
     else if (view.overlay === 'win') this.drawWin(ctx, view.result, view);
     else if (view.overlay === 'fail') this.drawFail(ctx, model, view, saveData);
     else if (view.overlay === 'rare') this.drawRareDiscovery(ctx, view.rareDiscovery);
+    else if (view.overlay === 'countdown') this.drawResumeCountdown(ctx, view.resumeCountdown);
   }
 
   drawBoard(ctx, model, top, bottom) {
@@ -941,19 +1109,24 @@ class Renderer {
     const playBottom = bottom - 14;
     const layout = getStackLayout(this.width, playTop, playBottom, model.stacks.length);
     const activeCollectible = model.getActiveCollectibleTimer();
+    const movement = model.config && model.config.movement || null;
+    const movementState = getMovementState(layout, movement, this.animationMs, this.reducedMotion);
+    this.boardInputBlocked = movementState.inputBlocked;
+    const goldenPacking = model.getGoldenPackingMs && model.getGoldenPackingMs() > 0;
+    const goldenTargets = goldenPacking ? new Set(model.getHints(99)) : new Set();
 
     drawCard(ctx, 24, top, this.width - 48, height, 36, 'rgba(255,255,255,0.52)', 'rgba(255,255,255,0.66)', 10);
     const guidance = getBoardGuidance(model);
     if (guidance) drawGuidanceBar(ctx, 44, top + 14, 406, 48, guidance);
     else drawBoardHeaderMotif(ctx, 48, top + 18, 396, 40);
-    drawStatusChip(ctx, 466, top + 14, 112, 48, 'coin', formatPoints(model.packingCoinsEarned || 0), CONFIG.COLORS.goldDark);
-    drawStatusChip(ctx, 592, top + 14, 112, 48, 'combo', String(model.combo), '#8063D8');
+    drawStatusChip(ctx, 466, top + 14, 112, 48, model.warningActive ? 'warning' : 'score', model.warningActive ? '警告' : formatPoints(model.score || 0), model.warningActive ? CONFIG.COLORS.danger : CONFIG.COLORS.goldDark);
+    drawStatusChip(ctx, 592, top + 14, 112, 48, 'combo', String(model.combo), goldenPacking ? CONFIG.COLORS.goldDark : '#8063D8');
     drawBoardAmbience(ctx, 42, playTop, this.width - 84, Math.max(60, playBottom - playTop));
 
     layout.rows.forEach((row) => drawConveyorBelt(ctx, row, layout.cardSize));
 
     model.stacks.forEach((stack, index) => {
-      const position = layout.positions[index];
+      const position = movementState.positions[index] || layout.positions[index];
       const cardSize = layout.cardSize;
       const x = position.x;
       const topCardY = position.y;
@@ -988,13 +1161,14 @@ class Renderer {
           const parsed = parseItemToken(type);
           drawItemCard(ctx, getItemById(parsed.type), drawX, drawY, size, alpha, depth === 0, parsed.rule);
         }
+        if (depth === 0 && goldenTargets.has(index)) drawGoldenCardGlow(ctx, drawX, drawY, size);
       }
 
       if (activeCollectible && activeCollectible.stackIndex === index) {
         drawRareCountdownBadge(ctx, x + cardSize - 46, topCardY + 10, activeCollectible.remainingMs);
       }
 
-      if (this.hintStack === index) {
+      if (this.hintStacks.indexOf(index) >= 0 || model.getSafeHighlightStack && model.getSafeHighlightStack() === index) {
         const pulse = 1 + Math.sin(Date.now() / 95) * 0.055;
         ctx.save();
         ctx.translate(x + cardSize / 2, topCardY + cardSize / 2);
@@ -1006,7 +1180,14 @@ class Renderer {
         ctx.restore();
       }
 
-      this.addRegion('stack', x - 4, topCardY - 8, cardSize + 8, cardSize + 16, { index });
+      if (!movementState.inputBlocked) {
+        const minimumTouch = Math.max(44, 44 * CONFIG.DESIGN_WIDTH / Math.max(320, this.platform.system.windowWidth || 375));
+        const touchSize = Math.max(cardSize + 8, minimumTouch);
+        this.addRegion('stack', x + cardSize / 2 - touchSize / 2, topCardY + cardSize / 2 - touchSize / 2, touchSize, touchSize, {
+          index,
+          token: stack[0]
+        });
+      }
 
       const hiddenCount = stack.length - visible;
       if (hiddenCount > 0) {
@@ -1024,6 +1205,8 @@ class Renderer {
     if (model.getInteractionFrozenMs && model.getInteractionFrozenMs() > 0) {
       drawFrozenBoardOverlay(ctx, 30, playTop - 4, this.width - 60, Math.max(120, playBottom - playTop + 8), model.getInteractionFrozenMs());
     }
+    if (movementState.warning) drawMovementWarning(ctx, this.width / 2, playTop + 16);
+    if (goldenPacking) drawGoldenPackingBanner(ctx, this.width / 2, playTop + 18, model.getGoldenPackingMs());
   }
 
   drawBoosters(ctx, model, y, saveData, view) {
@@ -1033,9 +1216,9 @@ class Renderer {
     // 卡面只保留图标和消耗，完整含义统一放在左上角“？”中。
     const visibleActions = getVisibleBoosterActions(model.level, model.daily);
     const tools = [
-      { action: 'hint', icon: 'hint', coinCost: BOOSTER_COIN_COSTS.hint, voucher: vouchers.hint || 0, color: '#D99D2D' },
-      { action: 'shuffle', icon: 'shuffle', coinCost: BOOSTER_COIN_COSTS.shuffle, voucher: vouchers.shuffle || 0, color: '#D97846' },
-      { action: 'add_time', icon: 'time', coinCost: BOOSTER_COIN_COSTS.add_time, voucher: vouchers.add_time || 0, color: '#278F82' },
+      { action: 'hint', icon: 'hint', coinCost: BOOSTER_COIN_COSTS.hint, voucher: vouchers.hint || 0, reward: rewardAvailable, color: '#D99D2D' },
+      { action: 'shuffle', icon: 'shuffle', coinCost: BOOSTER_COIN_COSTS.shuffle, voucher: vouchers.shuffle || 0, reward: rewardAvailable, color: '#D97846' },
+      { action: 'add_time', icon: 'time', coinCost: BOOSTER_COIN_COSTS.add_time, voucher: vouchers.add_time || 0, reward: rewardAvailable, color: '#278F82' },
       { action: 'auto_pack', icon: 'auto', coinCost: BOOSTER_COIN_COSTS.auto_pack, voucher: vouchers.auto_pack || 0, reward: rewardAvailable, color: '#7458C7' }
     ].filter((tool) => visibleActions.indexOf(tool.action) >= 0);
     const width = 148;
@@ -1044,7 +1227,7 @@ class Renderer {
     tools.forEach((tool, index) => {
       const x = startX + index * (width + gap);
       const displayTool = Object.assign({}, tool, {
-        cost: tool.voucher > 0 ? `×${tool.voucher}` : (tool.reward ? '▶' : tool.coinCost)
+        cost: tool.voucher > 0 ? `×${tool.voucher}` : (tool.reward ? '币 / ▶' : tool.coinCost)
       });
       const affordable = tool.voucher > 0 || tool.reward || saveData.coins >= tool.coinCost;
       drawBoosterTool(ctx, x, y, width, 72, displayTool, affordable);
@@ -1055,7 +1238,7 @@ class Renderer {
   drawTargets(ctx, model, y) {
     drawCard(ctx, 24, y, this.width - 48, 116, 30, 'rgba(255,255,255,0.72)', 'rgba(255,255,255,0.78)', 7);
     drawFeatureGlyph(ctx, 'box', 54, y + 24, 25, CONFIG.COLORS.coral);
-    drawText(ctx, '收集目标', 82, y + 33, 22, CONFIG.COLORS.ink, 'left', 900);
+    drawText(ctx, model.waveCount > 1 ? `收集目标 · 第 ${model.currentWave}/${model.waveCount} 波` : '收集目标', 82, y + 33, 22, CONFIG.COLORS.ink, 'left', 900);
     const orders = model.activeOrders;
     const gap = 12;
     const width = orders.length === 1 ? 250 : (orders.length === 2 ? 250 : (this.width - 84 - gap * 2) / 3);
@@ -1121,7 +1304,7 @@ class Renderer {
     drawTutorialStepNode(ctx, 598, flowY, 'box', '装满', CONFIG.COLORS.tealDark);
 
     drawTutorialRuleTile(ctx, 92, y + 354, 270, 112, 'clock', '别超时', CONFIG.COLORS.coral);
-    drawTutorialRuleTile(ctx, 388, y + 354, 270, 112, 'warning', '点错即失败', CONFIG.COLORS.danger);
+    drawTutorialRuleTile(ctx, 388, y + 354, 270, 112, 'warning', '首错扣 8 秒', CONFIG.COLORS.danger);
 
     const buttonY = y + h - 116;
     drawButton(ctx, 130, buttonY, 490, 82, '开始', '', 'play', CONFIG.COLORS.teal, CONFIG.COLORS.tealDark);
@@ -1204,16 +1387,32 @@ class Renderer {
 
   drawPause(ctx, view, saveData) {
     drawModalMask(ctx, this.width, this.height);
-    const y = this.height / 2 - 230;
-    drawCard(ctx, 98, y, 554, 450, 40, '#FFFDF8', 'rgba(255,255,255,0.8)', 26);
+    const y = this.height / 2 - 270;
+    drawCard(ctx, 98, y, 554, 530, 40, '#FFFDF8', 'rgba(255,255,255,0.8)', 26);
     drawText(ctx, '暂停装箱', this.width / 2, y + 78, 40, CONFIG.COLORS.ink, 'center', 900);
-    drawStatusChip(ctx, 146, y + 106, 210, 44, 'pause', `免费 ×${view.freePausesRemaining || 0}`, '#3E9FD6');
-    drawStatusChip(ctx, 394, y + 106, 210, 44, 'ticket', `券 ×${saveData.pauseTickets || 0}`, CONFIG.COLORS.coral);
-    drawStatusChip(ctx, 252, y + 155, 246, 40, 'sparkle', '闪耀藏品仍计时', CONFIG.COLORS.danger);
-    drawButton(ctx, 158, y + 218, 434, 82, '继续', '', 'play', CONFIG.COLORS.teal, CONFIG.COLORS.tealDark);
-    drawButton(ctx, 158, y + 326, 434, 82, '返回首页', '', 'home', '#FFFFFF', '#D7C9BC', CONFIG.COLORS.ink);
-    this.addRegion('resume', 158, y + 218, 434, 82);
-    this.addRegion('quit', 158, y + 326, 434, 82);
+    drawStatusChip(ctx, 190, y + 108, 370, 44, 'pause', '暂停不限次数且完全停表', '#3E9FD6');
+    drawStatusChip(ctx, 190, y + 162, 370, 40, 'sparkle', '藏品与移动也已暂停', CONFIG.COLORS.tealDark);
+    drawSmallButton(ctx, 158, y + 224, 434, 66, saveData.reducedMotion ? '舒缓动态：已开启' : '舒缓动态：未开启', '≈', '#A98BE2', '#7458C7');
+    drawButton(ctx, 158, y + 312, 434, 82, '继续 · 3 秒准备', '', 'play', CONFIG.COLORS.teal, CONFIG.COLORS.tealDark);
+    drawButton(ctx, 158, y + 414, 434, 70, '返回首页', '', 'home', '#FFFFFF', '#D7C9BC', CONFIG.COLORS.ink);
+    this.addRegion('toggle_motion', 158, y + 224, 434, 66);
+    this.addRegion('resume', 158, y + 312, 434, 82);
+    this.addRegion('quit', 158, y + 414, 434, 70);
+  }
+
+  drawResumeCountdown(ctx, value) {
+    drawModalMask(ctx, this.width, this.height, 0.38);
+    const number = Math.max(1, Math.floor(Number(value) || 3));
+    ctx.save();
+    ctx.shadowColor = 'rgba(61,49,82,0.3)';
+    ctx.shadowBlur = 30;
+    ctx.fillStyle = '#FFFDF8';
+    ctx.beginPath();
+    ctx.arc(this.width / 2, this.height / 2, 96, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    drawText(ctx, String(number), this.width / 2, this.height / 2 + 32, 92, CONFIG.COLORS.coral, 'center', 950);
+    drawText(ctx, '看清目标，准备继续', this.width / 2, this.height / 2 + 150, 24, '#FFFFFF', 'center', 850);
   }
 
   drawWin(ctx, result, view) {
@@ -1228,7 +1427,7 @@ class Renderer {
     if (!result.daily) {
       drawStars(ctx, this.width / 2, y + 235, result.stars);
       drawCoin(ctx, this.width / 2 - 84, y + 294, 10);
-      drawCenteredText(ctx, `星级奖励  ${result.stars || 0} × 10 = ${result.starCoins || 0} 金币`, this.width / 2 + 12, y + 294, 20, CONFIG.COLORS.goldDark, 'center', 850, 390);
+      drawCenteredText(ctx, result.firstClear ? `首通星级奖励 +${result.starCoins || 0} 金币` : `重复通关奖励为首通的 25%`, this.width / 2 + 12, y + 294, 20, CONFIG.COLORS.goldDark, 'center', 850, 420);
     } else {
       drawIntroFlowNode(ctx, this.width / 2, y + 235, 90, 'calendar', CONFIG.COLORS.teal);
       drawPill(
@@ -1237,7 +1436,7 @@ class Renderer {
         y + 286,
         252,
         40,
-        result.dailyBonusCoins ? '今日首胜 +60 金币' : '今日首胜奖励已领取',
+        result.dailyBonusCoins ? '今日首胜 +25 金币' : '今日首胜奖励已领取',
         'rgba(70,199,183,0.1)',
         CONFIG.COLORS.tealDark,
         17
@@ -1246,20 +1445,24 @@ class Renderer {
 
     const rewardY = y + 330;
     drawCard(ctx, 102, rewardY, 546, 132, 28, '#FFF8E5', 'rgba(219,157,45,0.2)', 5);
-    drawResultCoinMetric(ctx, 112, rewardY + 12, 168, 108, '物件金币', result.packingCoinsEarned || 0, CONFIG.COLORS.tealDark);
+    drawResultCoinMetric(ctx, 112, rewardY + 12, 168, 108, result.firstClear ? '装箱奖励' : '重复奖励', result.firstClear ? (result.boxCoins || 0) : (result.repeatCoins || 0), CONFIG.COLORS.tealDark);
     drawResultCoinMetric(
       ctx,
       291,
       rewardY + 12,
       168,
       108,
-      result.daily ? '今日首胜' : (result.streakBonus ? '通关+连胜' : '通关奖励'),
+      result.daily ? '今日首胜' : (result.truckChest ? '通关+货车' : '通关+星级'),
       result.daily ? (result.dailyBonusCoins || 0) : ((result.completionCoins || 0) + (result.starCoins || 0) + (result.streakBonus || 0)),
       CONFIG.COLORS.goldDark
     );
     drawResultCoinMetric(ctx, 470, rewardY + 12, 168, 108, '本关共得', result.earnedCoins || 0, CONFIG.COLORS.coralDark);
 
-    if (result.rescueTicketBonus) {
+    if (result.unlockedTheme) {
+      drawStatusChip(ctx, this.width / 2 - 118, y + 476, 236, 38, 'sparkle', `新主题 · ${result.unlockedTheme.name}`, result.unlockedTheme.darkColor || CONFIG.COLORS.tealDark);
+    } else if (result.truckChest) {
+      drawStatusChip(ctx, this.width / 2 - 104, y + 476, 208, 38, 'store', '货车装满 · 宝箱 +12', CONFIG.COLORS.goldDark);
+    } else if (result.rescueTicketBonus) {
       drawStatusChip(ctx, this.width / 2 - 82, y + 476, 164, 38, 'ticket', '救援券 +1', CONFIG.COLORS.coral);
     } else if (!result.daily && result.challengeScore) {
       drawStatusChip(
@@ -1284,8 +1487,8 @@ class Renderer {
     }
 
     drawSmallButton(ctx, 132, firstButtonY + 106, 232, 78, '好友比一比', '↗', '#9277E5', '#7458C7');
-    if (!result.daily && !view.doubleClaimed && view.rewardAvailable) {
-      drawSmallButton(ctx, 386, firstButtonY + 106, 232, 78, '奖励翻倍', '▶', CONFIG.COLORS.gold, CONFIG.COLORS.goldDark);
+    if (!result.daily && result.truckChest && !view.doubleClaimed && view.rewardAvailable) {
+      drawSmallButton(ctx, 386, firstButtonY + 106, 232, 78, '宝箱升级 +60', '▶', CONFIG.COLORS.gold, CONFIG.COLORS.goldDark);
       this.addRegion('double_reward', 386, firstButtonY + 106, 232, 78);
     } else {
       drawSmallButton(ctx, 386, firstButtonY + 106, 232, 78, '返回首页', '⌂', CONFIG.COLORS.teal, CONFIG.COLORS.tealDark);
@@ -1298,7 +1501,7 @@ class Renderer {
   drawFail(ctx, model, view, saveData) {
     drawModalMask(ctx, this.width, this.height, 0.5);
     const compact = this.height < 1450;
-    const hasTicket = (saveData.rescueTickets || 0) > 0;
+    const hasTicket = (saveData.rescueTickets || 0) > 0 || (model.level <= 5 && (saveData.newcomerRescues || 0) > 0);
     const collectionValue = getCollectionValue(saveData.rareFruits);
     const recoverableCoins = (saveData.coins || 0) + collectionValue;
     const needsSaleGuide = isFeatureUnlocked(saveData, 'store') && !(saveData.seenMechanics && saveData.seenMechanics.revive_sale);
@@ -1317,11 +1520,11 @@ class Renderer {
     const failHint = model.revived
       ? '本局已经复活过，换个顺序再来'
       : (canRevive
-        ? (timedOut ? '复活后至少保留 15 秒' : (bombed ? '复活后炸弹已解除' : '复活后重新选择正确目标'))
+        ? (timedOut ? '复活后至少保留 20 秒' : (bombed ? '复活后炸弹已解除' : '复活后清除警告并标出安全目标'))
         : '免费重开不限次数，换个顺序再来');
     drawText(ctx, failHint, this.width / 2, y + 237, 21, CONFIG.COLORS.mutedInk, 'center', 600);
 
-    const pointRank = getPointRank(saveData.coins || 0);
+    const pointRank = getPointRank(getTotalPoints(saveData));
     drawCard(ctx, 116, y + 264, 518, 84, 24, colorWithAlpha(pointRank.color, 0.06), colorWithAlpha(pointRank.color, 0.16), 3);
     drawResultMetric(ctx, 132, y + 277, 146, 58, 'box', `${model.boxesCompleted}/${model.orderQueue.length}`, CONFIG.COLORS.tealDark);
     drawResultMetric(ctx, 302, y + 277, 146, 58, 'tap', String(model.moves || 0), CONFIG.COLORS.coral);
@@ -1351,8 +1554,8 @@ class Renderer {
     const steps = [
       ['box', '看目标', '同类凑满 3 件', CONFIG.COLORS.coral],
       ['tap', '点顶层', '+数字表示下方件数', '#7458C7'],
-      ['warning', '别点错', '点错立即失败', CONFIG.COLORS.danger],
-      ['clock', '看时间', '每关首次暂停免费', CONFIG.COLORS.tealDark],
+      ['warning', '一次容错', '首错 -8 秒，再错失败', CONFIG.COLORS.danger],
+      ['clock', '放心暂停', '倒计时、藏品、移动全停', CONFIG.COLORS.tealDark],
       ['hint', '四种道具', '', '#D99D2D', true],
       ['sparkle', '闪耀藏品', '彩虹光圈仅 6 秒', '#B06ED8'],
       ['box', '藏品回归', '点亮后会随机成为目标', '#9277E5'],
@@ -1384,8 +1587,8 @@ class Renderer {
           drawFeatureGlyph(ctx, entry[0], iconX, rowCenterY, 25, entry[1]);
         });
       } else if (step[5]) {
-        [ITEM_RULES.frozen, ITEM_RULES.drain, ITEM_RULES.time_bonus, ITEM_RULES.sweep, ITEM_RULES.bomb]
-          .forEach((rule, ruleIndex) => drawCompactRuleBadge(ctx, 397 + ruleIndex * 47, rowCenterY - 17, rule));
+        [ITEM_RULES.sealed, ITEM_RULES.time_bonus, ITEM_RULES.sweep, ITEM_RULES.shield, ITEM_RULES.wildcard, ITEM_RULES.bomb]
+          .forEach((rule, ruleIndex) => drawCompactRuleBadge(ctx, 382 + ruleIndex * 46, rowCenterY - 17, rule));
       } else {
         drawCenteredText(ctx, step[2], 626, rowCenterY, 18, CONFIG.COLORS.mutedInk, 'right', 750, 250);
       }
@@ -1498,6 +1701,54 @@ function drawResultCoinMetric(ctx, x, y, width, height, label, value, color) {
   drawCenteredText(ctx, label, x + width / 2, y + 27, 16, CONFIG.COLORS.mutedInk, 'center', 800, width - 24);
   drawCoin(ctx, x + 42, y + 72, 11);
   drawCenteredText(ctx, `+${Math.max(0, Math.floor(Number(value) || 0))}`, x + width - 22, y + 72, 25, color, 'right', 950, width - 72);
+}
+
+function drawChoicePaymentCard(ctx, x, y, width, height, icon, title, description, color, enabled) {
+  ctx.save();
+  ctx.globalAlpha = enabled ? 1 : 0.52;
+  drawCard(ctx, x, y, width, height, 28, enabled ? colorWithAlpha(color, 0.08) : '#F1EEF2', colorWithAlpha(color, enabled ? 0.28 : 0.1), enabled ? 8 : 3);
+  const compact = height < 170;
+  drawIntroFlowNode(ctx, x + width / 2, y + 36, 54, icon, color);
+  drawCenteredText(ctx, title, x + width / 2, y + 82, 22, CONFIG.COLORS.ink, 'center', 900, width - 28);
+  drawWrappedText(
+    ctx,
+    enabled ? description : (icon === 'video' ? '视频暂不可用' : '当前金币不足'),
+    x + width / 2,
+    y + (compact ? 130 : 136),
+    16,
+    CONFIG.COLORS.mutedInk,
+    'center',
+    750,
+    width - 30,
+    28,
+    compact ? 1 : 2
+  );
+  ctx.restore();
+}
+
+function drawDecorationCard(ctx, x, y, width, height, style, label, color, pale, options) {
+  const opts = options || {};
+  const unlocked = opts.unlocked !== false;
+  ctx.save();
+  ctx.globalAlpha = unlocked ? 1 : 0.48;
+  drawCard(ctx, x, y, width, height, 32, unlocked ? pale : '#F1EEF2', colorWithAlpha(color, unlocked ? 0.34 : 0.12), opts.active ? 14 : 9);
+  ctx.fillStyle = colorWithAlpha(color, 0.18);
+  fillRoundRect(ctx, x + 28, y + 38, width - 56, 176, 26);
+  ctx.fillStyle = style === 'fresh' ? '#71C9B7' : '#B77551';
+  fillRoundRect(ctx, x + 48, y + 80, width - 96, 22, 10);
+  fillRoundRect(ctx, x + 48, y + 145, width - 96, 22, 10);
+  for (let index = 0; index < 3; index += 1) {
+    ctx.fillStyle = index % 2 ? CONFIG.COLORS.gold : color;
+    ctx.beginPath();
+    ctx.arc(x + 78 + index * 58, y + 128, 17, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  drawCenteredText(ctx, label, x + width / 2, y + 250, 24, CONFIG.COLORS.ink, 'center', 900, width - 30);
+  const actionText = opts.active ? '当前使用' : (unlocked ? (opts.actionText || '点击应用') : '尚未解锁');
+  drawPill(ctx, x + 48, y + 282, width - 96, 38, actionText, colorWithAlpha(color, 0.12), color, 17);
+  if (opts.active) drawFeatureGlyph(ctx, 'check', x + width - 28, y + 29, 24, color);
+  else if (!unlocked) drawLockIcon(ctx, x + width - 28, y + 29, 24, CONFIG.COLORS.mutedInk);
+  ctx.restore();
 }
 
 function drawReviveSources(ctx, centerX, centerY) {
@@ -1630,13 +1881,110 @@ function drawStreakChest(ctx, x, y, width, height, winStreak) {
   drawCenteredText(ctx, '+50', x + width - 22, y + height / 2, 19, CONFIG.COLORS.goldDark, 'right', 900);
 }
 
+function drawBaseDecorationBackdrop(ctx, width, safeTop, decorations, fresh, home) {
+  const shelfColor = fresh ? '#52B8A7' : '#A96947';
+  const accent = fresh ? '#32A892' : '#E58C5B';
+  const shelfY = safeTop + (home ? 112 : 88);
+  ctx.save();
+  ctx.globalAlpha = home ? 0.82 : 0.5;
+  ctx.shadowColor = colorWithAlpha(shelfColor, 0.22);
+  ctx.shadowBlur = home ? 12 : 7;
+  ctx.fillStyle = shelfColor;
+  fillRoundRect(ctx, 28, shelfY - 8, width - 56, 16, 8);
+  ctx.shadowColor = 'transparent';
+  ctx.fillStyle = colorWithAlpha('#FFFFFF', 0.3);
+  fillRoundRect(ctx, 36, shelfY - 6, width - 72, 4, 2);
+  if (home) {
+    ctx.fillStyle = shelfColor;
+    fillRoundRect(ctx, 42, shelfY + 4, 12, 54, 6);
+    fillRoundRect(ctx, width - 54, shelfY + 4, 12, 54, 6);
+  }
+  decorations.slice(0, 10).forEach((entry, index) => {
+    const pointX = 52 + index * ((width - 104) / 9);
+    const drop = index % 2 ? 18 : 28;
+    ctx.strokeStyle = colorWithAlpha(shelfColor, 0.76);
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(pointX, shelfY + 5);
+    ctx.lineTo(pointX, shelfY + drop);
+    ctx.stroke();
+    if (fresh) {
+      ctx.fillStyle = index % 3 === 0 ? CONFIG.COLORS.gold : accent;
+      ctx.beginPath();
+      ctx.ellipse(pointX - 5, shelfY + drop + 3, 9 + index * 0.3, 5, -0.55, 0, Math.PI * 2);
+      ctx.ellipse(pointX + 5, shelfY + drop + 3, 9 + index * 0.3, 5, 0.55, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.fillStyle = index % 3 === 0 ? CONFIG.COLORS.gold : accent;
+      ctx.shadowColor = colorWithAlpha(ctx.fillStyle, 0.34);
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.arc(pointX, shelfY + drop + 4, 8 + Math.min(3, index * 0.35), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowColor = 'transparent';
+    }
+  });
+  ctx.restore();
+}
+
+function drawBaseDecorHomeTile(ctx, x, y, width, height, saveData) {
+  const decorations = Array.isArray(saveData && saveData.warehouseDecorations)
+    ? saveData.warehouseDecorations
+    : [];
+  const fresh = saveData && saveData.warehouseStyle === 'fresh';
+  const color = fresh ? '#278F82' : '#C66F42';
+  const pale = fresh ? 'rgba(231,250,246,0.84)' : 'rgba(255,240,210,0.84)';
+  drawCard(ctx, x, y, width, height, 24, pale, colorWithAlpha(color, 0.2), 5);
+  ctx.fillStyle = colorWithAlpha(color, 0.12);
+  fillRoundRect(ctx, x + 18, y + 12, 60, height - 24, 18);
+  ctx.fillStyle = color;
+  fillRoundRect(ctx, x + 28, y + 27, 40, 6, 3);
+  fillRoundRect(ctx, x + 28, y + 47, 40, 6, 3);
+  [0, 1, 2].forEach((index) => {
+    ctx.fillStyle = index === 1 ? CONFIG.COLORS.gold : color;
+    ctx.beginPath();
+    ctx.arc(x + 35 + index * 13, y + 40, 5, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  drawCenteredText(ctx, '我的装箱基地', x + 96, y + 25, 20, CONFIG.COLORS.ink, 'left', 900, 280, 24);
+  const styleName = fresh ? '清新薄荷架' : '暖光木架';
+  drawCenteredText(ctx, `${decorations.length}/10 · 当前 ${styleName}`, x + 96, y + 55, 17, CONFIG.COLORS.mutedInk, 'left', 800, 300, 23);
+  drawPill(ctx, x + width - 116, y + 19, 92, 40, '查看', colorWithAlpha(color, 0.1), color, 17);
+}
+
+function drawNearestGoal(ctx, x, y, width, height, saveData) {
+  const currentDay = dayKey();
+  const progress = saveData.dailyTaskDate === currentDay ? (saveData.dailyTaskProgress || {}) : {};
+  const completed = saveData.dailyTaskDate === currentDay ? (saveData.dailyTaskCompleted || {}) : {};
+  const tasks = [
+    { id: 'play', target: 3, label: '今日完成 3 局', icon: 'route' },
+    { id: 'win', target: 2, label: '今日通关 2 次', icon: 'box' },
+    { id: 'combo', target: 10, label: '今日达成 10 连击', icon: 'combo' }
+  ];
+  const task = tasks.find((entry) => !completed[entry.id]);
+  const color = task ? '#7458C7' : CONFIG.COLORS.goldDark;
+  drawCard(ctx, x, y, width, height, 24, 'rgba(255,255,255,0.78)', colorWithAlpha(color, 0.18), 5);
+  drawFeatureGlyph(ctx, task ? task.icon : 'store', x + 47, y + height / 2, 31, color);
+  if (task) {
+    const value = Math.min(task.target, Math.max(0, Math.floor(Number(progress[task.id]) || 0)));
+    drawCenteredText(ctx, '最近目标', x + 86, y + 22, 16, CONFIG.COLORS.mutedInk, 'left', 800, 120);
+    drawCenteredText(ctx, task.label, x + 86, y + 51, 21, CONFIG.COLORS.ink, 'left', 900, 300);
+    drawPill(ctx, x + width - 132, y + 19, 108, 40, `${value}/${task.target}`, colorWithAlpha(color, 0.1), color, 18);
+  } else {
+    const truckProgress = Math.min(2, Math.max(0, Math.floor(Number(saveData.truckProgress) || 0)));
+    drawCenteredText(ctx, '今日任务完成', x + 86, y + 24, 17, CONFIG.COLORS.mutedInk, 'left', 800, 210);
+    drawCenteredText(ctx, `再首通 ${3 - truckProgress} 关装满货车`, x + 86, y + 54, 21, CONFIG.COLORS.ink, 'left', 900, 330);
+    drawPill(ctx, x + width - 132, y + 19, 108, 40, `${truckProgress}/3`, '#FFF5D8', CONFIG.COLORS.goldDark, 18);
+  }
+}
+
 function drawRankTab(ctx, x, y, width, height, label, value, active, color) {
   drawCard(ctx, x, y, width, height, 24, active ? colorWithAlpha(color, 0.14) : 'rgba(255,255,255,0.68)', active ? color : 'rgba(61,49,82,0.1)', active ? 10 : 5);
   ctx.fillStyle = colorWithAlpha(color, active ? 0.18 : 0.1);
   ctx.beginPath(); ctx.arc(x + 52, y + height / 2, 26, 0, Math.PI * 2); ctx.fill();
-  const coins = label === '金币';
-  drawFeatureGlyph(ctx, coins ? 'coin' : 'museum', x + 52, y + height / 2, 29, color);
-  drawCenteredText(ctx, coins ? '金币' : '藏品', x + 100, y + 25, 18, active ? color : CONFIG.COLORS.mutedInk, 'left', 850, width - 142, 22);
+  const score = label !== '藏品数';
+  drawFeatureGlyph(ctx, score ? 'score' : 'museum', x + 52, y + height / 2, 29, color);
+  drawCenteredText(ctx, score ? '总成绩' : '藏品', x + 100, y + 25, 18, active ? color : CONFIG.COLORS.mutedInk, 'left', 850, width - 142, 22);
   drawCenteredText(ctx, value, x + width - 30, y + 62, 27, active ? color : CONFIG.COLORS.ink, 'right', 950, width - 142, 28);
 }
 
@@ -1896,8 +2244,8 @@ function drawFeatureGlyph(ctx, type, x, y, size, color) {
 function drawFriendRankFallback(ctx, x, y, width, height, metric, saveData) {
   const value = metric === 'collection_count'
     ? countAllDiscoveredCollectibles(saveData.rareFruits)
-    : Math.max(0, Math.floor(Number(saveData.coins) || 0));
-  const suffix = metric === 'collection_count' ? '件' : '金币';
+    : getTotalPoints(saveData);
+  const suffix = metric === 'collection_count' ? '件' : '分';
   const rowHeight = Math.min(92, Math.max(74, height / 7));
   drawCard(ctx, x + 10, y + 8, width - 20, rowHeight - 12, 21, '#FFF3D4', 'rgba(219,157,45,0.25)', 4);
   const firstCenterY = y + 8 + (rowHeight - 12) / 2;
@@ -2067,6 +2415,104 @@ function drawFrozenBoardOverlay(ctx, x, y, width, height, remainingMs) {
   ctx.restore();
 }
 
+function getMovementState(layout, movement, animationMs, reducedMotion) {
+  const positions = layout.positions.map((position) => Object.assign({}, position));
+  if (!movement) return { positions, inputBlocked: false, warning: false };
+  const motionScale = reducedMotion ? 0.7 : 1;
+  // 只缩放时间轴一次。若同时放慢 time 又放大 period，0.7 会被重复应用成
+  // 0.49，与“速度降低 30%”的设置文案不一致。
+  const time = Math.max(0, Number(animationMs) || 0) * motionScale;
+  const amplitude = Math.max(0, Number(movement.amplitude) || 18) * motionScale;
+  const period = Math.max(1200, Number(movement.periodMs) || 4200);
+  let inputBlocked = false;
+  let warning = false;
+
+  if (movement.type === 'horizontal') {
+    layout.rows.forEach((row, rowIndex) => {
+      const direction = rowIndex % 2 ? -1 : 1;
+      const offset = Math.sin(time / period * Math.PI * 2) * amplitude * direction;
+      positions.forEach((position) => { if (position.rowIndex === rowIndex) position.x += offset; });
+    });
+  } else if (movement.type === 'bob') {
+    positions.forEach((position, index) => {
+      position.y += Math.sin(time / period * Math.PI * 2 + index * 0.82) * amplitude;
+    });
+  } else if (movement.type === 'carousel') {
+    layout.rows.forEach((row, rowIndex) => {
+      const phase = time / period * Math.PI * 2 + rowIndex * Math.PI;
+      const offsetX = Math.cos(phase) * amplitude;
+      const offsetY = Math.sin(phase) * amplitude * 0.72;
+      positions.forEach((position) => {
+        if (position.rowIndex !== rowIndex) return;
+        position.x += offsetX;
+        position.y += offsetY;
+      });
+    });
+  } else if (movement.type === 'lane_swap') {
+    const warningMs = Math.max(500, Number(movement.warningMs) || 600);
+    const transitionMs = Math.max(600, Number(movement.transitionMs) || 820);
+    const safetyMs = Math.max(300, Number(movement.safetyMs) || 300);
+    const half = period / 2;
+    const phase = time % period;
+    const direction = phase >= half ? 1 : 0;
+    const local = phase % half;
+    let factor = direction ? 1 : 0;
+    if (local < warningMs) {
+      inputBlocked = true;
+      warning = true;
+    } else if (local < warningMs + transitionMs) {
+      inputBlocked = true;
+      const raw = (local - warningMs) / transitionMs;
+      const smooth = raw * raw * (3 - 2 * raw);
+      factor = direction ? 1 - smooth : smooth;
+    } else {
+      factor = direction ? 0 : 1;
+      inputBlocked = local < warningMs + transitionMs + safetyMs;
+    }
+
+    const groups = {};
+    positions.forEach((position, index) => {
+      if (!groups[position.rowIndex]) groups[position.rowIndex] = [];
+      groups[position.rowIndex].push(index);
+    });
+    Object.keys(groups).forEach((key) => {
+      const indices = groups[key];
+      for (let cursor = 0; cursor + 1 < indices.length; cursor += 2) {
+        const firstIndex = indices[cursor];
+        const secondIndex = indices[cursor + 1];
+        const firstBase = layout.positions[firstIndex];
+        const secondBase = layout.positions[secondIndex];
+        positions[firstIndex].x = lerp(firstBase.x, secondBase.x, factor);
+        positions[secondIndex].x = lerp(secondBase.x, firstBase.x, factor);
+        const arc = Math.sin(Math.PI * factor) * layout.cardSize * 0.64;
+        positions[firstIndex].y = firstBase.y - arc;
+        positions[secondIndex].y = secondBase.y + arc;
+      }
+    });
+  }
+  return { positions, inputBlocked, warning };
+}
+
+function drawMovementWarning(ctx, centerX, y) {
+  drawPill(ctx, centerX - 104, y, 208, 42, '换道预告 · 稍等', '#FFF0F1', CONFIG.COLORS.danger, 18);
+}
+
+function drawGoldenPackingBanner(ctx, centerX, y, remainingMs) {
+  const seconds = Math.max(0, Number(remainingMs) || 0) / 1000;
+  drawPill(ctx, centerX - 132, y, 264, 44, `黄金装箱 ${seconds.toFixed(1)}s · 停表`, '#FFF3C5', CONFIG.COLORS.goldDark, 18);
+}
+
+function drawGoldenCardGlow(ctx, x, y, size) {
+  ctx.save();
+  ctx.strokeStyle = CONFIG.COLORS.gold;
+  ctx.lineWidth = 6;
+  ctx.shadowColor = CONFIG.COLORS.gold;
+  ctx.shadowBlur = 18;
+  ctx.globalAlpha = 0.9;
+  strokeRoundRect(ctx, x - 3, y - 3, size + 6, size + 6, size * 0.24);
+  ctx.restore();
+}
+
 function getStackLayout(width, top, bottom, stackCount) {
   const count = Math.max(1, stackCount || 1);
   const height = Math.max(280, bottom - top);
@@ -2162,13 +2608,15 @@ function drawBoosterTool(ctx, x, y, width, height, tool, affordable) {
   ctx.beginPath(); ctx.arc(x + 38, y + height / 2, 23, 0, Math.PI * 2); ctx.fill();
   drawBoosterIcon(ctx, x + 38, y + height / 2, 22, tool.icon, tool.color);
   const costColor = affordable ? tool.color : CONFIG.COLORS.mutedInk;
+  const pillX = x + 66;
+  const pillWidth = width - 76;
   ctx.fillStyle = colorWithAlpha(costColor, 0.1);
-  fillRoundRect(ctx, x + 76, y + 18, width - 92, 36, 18);
+  fillRoundRect(ctx, pillX, y + 18, pillWidth, 36, 18);
   if (typeof tool.cost === 'number') {
-    drawMiniCoin(ctx, x + 88, y + height / 2, 7);
-    drawCenteredText(ctx, String(tool.cost), x + width - 20, y + height / 2, 15, costColor, 'right', 900, width - 112, 24);
+    drawMiniCoin(ctx, pillX + 12, y + height / 2, 7);
+    drawCenteredText(ctx, String(tool.cost), pillX + pillWidth - 8, y + height / 2, 15, costColor, 'right', 900, pillWidth - 26, 24);
   } else {
-    drawCenteredText(ctx, String(tool.cost), x + 76 + (width - 92) / 2, y + height / 2, 15, costColor, 'center', 900, width - 108, 24);
+    drawCenteredText(ctx, String(tool.cost), pillX + pillWidth / 2, y + height / 2, 15, costColor, 'center', 900, pillWidth - 12, 24);
   }
   ctx.restore();
 }
@@ -2561,7 +3009,7 @@ function drawLockedThemeGate(ctx, theme, y, width) {
   drawSealedCollectionIcon(ctx, width / 2, y + 99, 104, theme.darkColor);
   drawPill(ctx, width / 2 - 82, y + 181, 164, 40, '下一主题', theme.paleColor, theme.darkColor, 18);
   drawText(ctx, theme.name, width / 2, y + 266, 38, CONFIG.COLORS.ink, 'center', 950);
-  drawStatusChip(ctx, width / 2 - 112, y + 300, 224, 44, 'lock', '集齐上一主题', theme.darkColor);
+  drawStatusChip(ctx, width / 2 - 126, y + 300, 252, 44, 'lock', '每 20 个全局首通开启', theme.darkColor);
 }
 
 function getVisibleBoosterActions(level, daily) {
@@ -2716,6 +3164,28 @@ function getReadableTextSize(size) {
   if (value < 27) return 32;
   if (value < 31) return 34;
   return value;
+}
+
+function getContainedRect(sourceWidth, sourceHeight, x, y, width, height) {
+  const sw = Math.max(1, Number(sourceWidth) || 1);
+  const sh = Math.max(1, Number(sourceHeight) || 1);
+  const targetWidth = Math.max(1, Number(width) || 1);
+  const targetHeight = Math.max(1, Number(height) || 1);
+  const scale = Math.min(targetWidth / sw, targetHeight / sh);
+  const fittedWidth = sw * scale;
+  const fittedHeight = sh * scale;
+  return {
+    x: Number(x) + (targetWidth - fittedWidth) / 2,
+    y: Number(y) + (targetHeight - fittedHeight) / 2,
+    width: fittedWidth,
+    height: fittedHeight
+  };
+}
+
+function drawImageContained(ctx, image, x, y, width, height) {
+  const rect = getContainedRect(image && image.width, image && image.height, x, y, width, height);
+  ctx.drawImage(image, rect.x, rect.y, rect.width, rect.height);
+  return rect;
 }
 
 function drawOutlinedText(ctx, text, x, y, size, fill, stroke, lineWidth) {
@@ -3240,6 +3710,7 @@ function drawItemCard(ctx, item, x, y, size, alpha, top, rule) {
 
 function drawOrderBox(ctx, item, x, y, width, height, count, target, rule) {
   const rush = rule && rule.type === 'rush';
+  const sequence = rule && rule.sequence;
   const nearlyPacked = target - count === 1;
   ctx.save();
   ctx.shadowColor = (rush && !rule.expired) || nearlyPacked ? 'rgba(232,167,45,0.42)' : 'rgba(80,49,34,0.16)';
@@ -3289,6 +3760,8 @@ function drawOrderBox(ctx, item, x, y, width, height, count, target, rule) {
       rule.expired ? CONFIG.COLORS.mutedInk : CONFIG.COLORS.goldDark,
       14
     );
+  } else if (sequence) {
+    drawPill(ctx, x + width - 68, y - 3, 62, 30, `序${rule.sequencePosition || 1}`, '#F0EBFF', '#7458C7', 14);
   } else if (nearlyPacked) {
     ctx.strokeStyle = colorWithAlpha(CONFIG.COLORS.gold, 0.9);
     ctx.lineWidth = 3;
@@ -4076,6 +4549,8 @@ module.exports = {
   Renderer,
   drawItemIcon,
   fillRoundRect,
+  getContainedRect,
+  getMovementState,
   getVisibleBoosterActions,
   normalizeFontWeight,
   roundedPath

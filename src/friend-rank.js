@@ -1,13 +1,14 @@
 'use strict';
 
 const { countAllDiscoveredCollectibles } = require('./theme-collectibles');
+const { getTotalPoints } = require('./progression');
 
 class FriendRankManager {
   constructor(platform) {
     this.platform = platform;
     this.context = null;
     this.sharedCanvas = null;
-    this.metric = 'coins';
+    this.metric = 'total_points';
     this.available = false;
     try {
       this.context = platform.getOpenDataContext && platform.getOpenDataContext();
@@ -24,13 +25,13 @@ class FriendRankManager {
     if (!this.platform.setUserCloudStorage) return Promise.resolve(false);
     const collectionCount = countAllDiscoveredCollectibles(saveData && saveData.rareFruits);
     return this.platform.setUserCloudStorage([
-      { key: 'coins', value: String(Math.max(0, Math.floor(Number(saveData && saveData.coins) || 0))) },
+      { key: 'total_points', value: String(getTotalPoints(saveData)) },
       { key: 'collection_count', value: String(collectionCount) }
     ]);
   }
 
   show(metric, width, height) {
-    this.metric = metric === 'collection_count' ? 'collection_count' : 'coins';
+    this.metric = metric === 'collection_count' ? 'collection_count' : 'total_points';
     if (!this.available) return null;
     const targetWidth = Math.max(320, Math.floor(Number(width) || 654));
     const targetHeight = Math.max(400, Math.floor(Number(height) || 820));

@@ -70,9 +70,9 @@ if (projectConfig.openDataContextRoot !== 'open-data') {
   errors.push('project.config.json openDataContextRoot 必须指向 open-data');
 }
 if (projectConfig.appid === 'touristappid') warnings.push('发布前需把 touristappid 替换为正式小游戏 AppID');
-if (packageConfig.version !== '1.0.0') errors.push('package.json 版本号必须为 1.0.0');
-if (packageLock.version !== '1.0.0' || !packageLock.packages || packageLock.packages[''].version !== '1.0.0') {
-  errors.push('package-lock.json 版本号必须与 1.0.0 保持一致');
+if (packageConfig.version !== '1.1.0') errors.push('package.json 版本号必须为 1.1.0');
+if (packageLock.version !== '1.1.0' || !packageLock.packages || packageLock.packages[''].version !== '1.1.0') {
+  errors.push('package-lock.json 版本号必须与 1.1.0 保持一致');
 }
 if (!packageConfig.scripts || !packageConfig.scripts.test || !packageConfig.scripts['build:web']) {
   errors.push('package.json 缺少 test 或 build:web 脚本');
@@ -131,8 +131,8 @@ if (packageBytes > 20 * 1024 * 1024) errors.push(`运行包约 ${(packageBytes /
 const configSource = fs.existsSync(path.join(root, 'src/config.js'))
   ? fs.readFileSync(path.join(root, 'src/config.js'), 'utf8')
   : '';
-if (!/VERSION:\s*['"]1\.0\.0['"]/.test(configSource)) {
-  errors.push('src/config.js 版本号必须为 1.0.0');
+if (!/VERSION:\s*['"]1\.1\.0['"]/.test(configSource)) {
+  errors.push('src/config.js 版本号必须为 1.1.0');
 }
 if (/enabled:\s*true/.test(configSource) && /REPLACE_WITH/.test(configSource)) {
   errors.push('广告已启用，但广告位 ID 仍是占位符');
@@ -164,12 +164,42 @@ if (/ctx\.textBaseline\s*=\s*['"]middle['"]/.test(rendererSource)) {
 if (/\.fillText\([^;\n]*,\s*maxWidth\s*\)/.test(rendererSource)) {
   errors.push('src/renderer.js 仍使用 fillText 的 maxWidth 横向压缩文字，真机会出现瘦高字形');
 }
+const scalePattern = /ctx\.scale\(([^,\n]+),\s*([^\)\n]+)\)/g;
+let scaleMatch = null;
+while ((scaleMatch = scalePattern.exec(rendererSource))) {
+  const horizontal = scaleMatch[1].replace(/\s+/g, '');
+  const vertical = scaleMatch[2].replace(/\s+/g, '');
+  if (horizontal !== vertical) {
+    const line = rendererSource.slice(0, scaleMatch.index).split('\n').length;
+    errors.push(`src/renderer.js:${line} 使用了非等比 Canvas 缩放，可能造成文字或图标变形`);
+  }
+}
+if (!/drawImageContained\(\s*ctx,\s*view\.friendRankCanvas/.test(rendererSource)) {
+  errors.push('好友榜必须使用等比绘制，不得把开放数据画布拉伸到面板');
+}
+['仓库装饰', '装进仓库'].forEach((ambiguousText) => {
+  if ((rendererSource + fs.readFileSync(path.join(root, 'src/app.js'), 'utf8')).indexOf(ambiguousText) >= 0) {
+    errors.push(`玩家界面仍包含含糊文案“${ambiguousText}”，应统一为“装箱基地”`);
+  }
+});
 
 const openDataSource = fs.existsSync(path.join(root, 'open-data/index.js'))
   ? fs.readFileSync(path.join(root, 'open-data/index.js'), 'utf8')
   : '';
 if (/\bcanvas\.(?:width|height)\s*=/.test(openDataSource)) {
   errors.push('open-data/index.js 不得修改只读 sharedCanvas 尺寸，应由主域统一设置');
+}
+openDataSource.split('\n').forEach((line, index) => {
+  if (line.indexOf('ctx.font =') < 0) return;
+  if (!/readableWeight|\$\{weight\}/.test(line)) {
+    errors.push(`open-data/index.js:${index + 1} 的 Canvas 字体未使用标准整百字重`);
+  }
+});
+if (/ctx\.textBaseline\s*=\s*['"]middle['"]/.test(openDataSource)) {
+  errors.push('open-data/index.js 不得使用 textBaseline="middle"，中文可能偏移或变形');
+}
+if (/\.fillText\([^;\n]*,\s*[^,\n]+\s*,\s*[^,\n]+\s*,\s*[^,\n]+\s*\)/.test(openDataSource)) {
+  errors.push('open-data/index.js 不得使用 fillText 的 maxWidth 参数压缩文字');
 }
 
 const shareSource = fs.existsSync(path.join(root, 'src/share.js'))
@@ -192,8 +222,8 @@ if (/lifetime_coins|total_score|getLifetimeCoins/.test(friendRankSource + openDa
 const webBundleSource = fs.existsSync(path.join(root, 'web/game.bundle.js'))
   ? fs.readFileSync(path.join(root, 'web/game.bundle.js'), 'utf8')
   : '';
-if (webBundleSource && !/VERSION:\s*['"]1\.0\.0['"]/.test(webBundleSource)) {
-  errors.push('web/game.bundle.js 版本号不是 1.0.0，请重新执行 npm run build:web');
+if (webBundleSource && !/VERSION:\s*['"]1\.1\.0['"]/.test(webBundleSource)) {
+  errors.push('web/game.bundle.js 版本号不是 1.1.0，请重新执行 npm run build:web');
 }
 
 console.log(`检查了 ${jsFiles.length} 个 JavaScript 文件`);

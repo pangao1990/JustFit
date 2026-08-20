@@ -9,29 +9,30 @@ const FEATURE_UNLOCK_LEVELS = Object.freeze({
   store: 8
 });
 
-const REVIVE_COIN_COST = 180;
-const RESCUE_TICKET_STORE_COST = 240;
-const PAUSE_TICKET_STORE_COST = 70;
-const MAX_PAUSE_TICKETS = 12;
+const REVIVE_COIN_COST = 600;
+const RESCUE_TICKET_STORE_COST = 540;
+// 暂停现在永久免费。保留旧常量与存档读取只为兼容已经购买过暂停券的玩家。
+const PAUSE_TICKET_STORE_COST = 0;
+const MAX_PAUSE_TICKETS = 0;
 const MAX_BOOSTER_VOUCHERS = 99;
-const AD_COIN_REWARD = 30;
-const AD_COIN_DAILY_LIMIT = 3;
+const AD_COIN_REWARD = 60;
+const AD_COIN_DAILY_LIMIT = 2;
 const MAX_STORE_PURCHASE_QUANTITY = 10;
 
 const BOOSTER_COIN_COSTS = Object.freeze({
-  hint: 30,
-  shuffle: 50,
-  add_time: 90,
-  auto_pack: 150
+  hint: 120,
+  shuffle: 180,
+  add_time: 260,
+  auto_pack: 360
 });
 
 // 在商店提前备货会比关卡内临时购买略便宜，鼓励玩家主动规划，
 // 但折扣不大到足以破坏金币消耗节奏。
 const BOOSTER_VOUCHER_COSTS = Object.freeze({
-  hint: 28,
-  shuffle: 46,
-  add_time: 82,
-  auto_pack: 135
+  hint: 108,
+  shuffle: 162,
+  add_time: 234,
+  auto_pack: 324
 });
 
 const RARITY_SELL_VALUES = Object.freeze({
@@ -48,17 +49,8 @@ const STORE_PRODUCT_DEFINITIONS = Object.freeze({
     icon: 'ticket',
     color: '#FF786B',
     unitCost: RESCUE_TICKET_STORE_COST,
-    maxOwned: 9,
+    maxOwned: 3,
     description: '失败后复活 1 次，每局最多使用 1 次。'
-  }),
-  pause_ticket: Object.freeze({
-    id: 'pause_ticket',
-    label: '暂停券',
-    icon: 'pause',
-    color: '#3E9FD6',
-    unitCost: PAUSE_TICKET_STORE_COST,
-    maxOwned: MAX_PAUSE_TICKETS,
-    description: '每关首次暂停免费，之后每次暂停消耗 1 张。'
   }),
   voucher_hint: Object.freeze({
     id: 'voucher_hint',
@@ -94,7 +86,7 @@ const STORE_PRODUCT_DEFINITIONS = Object.freeze({
     color: '#7458C7',
     unitCost: BOOSTER_VOUCHER_COSTS.auto_pack,
     maxOwned: MAX_BOOSTER_VOUCHERS,
-    description: '自动收集最多 4 件安全目标。'
+    description: '自动收集最多 4 件安全目标，不会虚增连击。'
   })
 });
 
@@ -132,7 +124,7 @@ function getCollectibleSellValue(collectibleOrId) {
 function getCollectionValue(collection) {
   const data = collection || {};
   return COLLECTIBLES.reduce((sum, collectible) => (
-    sum + getOwnedCount(data[collectible.id]) * getCollectibleSellValue(collectible)
+    sum + Math.max(0, getOwnedCount(data[collectible.id]) - 1) * getCollectibleSellValue(collectible)
   ), 0);
 }
 
@@ -148,7 +140,8 @@ function getSellableCollectibles(collection) {
         unitValue: getCollectibleSellValue(collectible)
       };
     })
-    .filter((item) => item.owned > 0)
+    // 最后一件永远留在藏馆，只允许回收重复件，避免玩家误操作破坏收藏感。
+    .filter((item) => item.owned > 1)
     .sort((a, b) => {
       const aDuplicate = a.owned > 1 ? 0 : 1;
       const bDuplicate = b.owned > 1 ? 0 : 1;
@@ -165,14 +158,12 @@ function createAutoSellPlan(collection, neededCoins) {
   const data = collection || {};
   const copies = [];
   getSellableCollectibles(data).forEach((item) => {
-    // 先选择重复件，只有重复件不够时才选择最后一件。图鉴发现记录永久保留，
-    // 因此出售最后一件也不会让已经点亮的轮廓重新变灰。
-    for (let index = 0; index < item.owned; index += 1) {
+    for (let index = 0; index < item.owned - 1; index += 1) {
       copies.push({
         id: item.collectible.id,
         collectible: item.collectible,
         unitValue: item.unitValue,
-        priority: index < item.owned - 1 ? 0 : 1
+        priority: 0
       });
     }
   });

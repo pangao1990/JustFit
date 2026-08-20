@@ -29,8 +29,15 @@ function normalizePoints(value) {
 
 function getTotalPoints(data) {
   const source = data || {};
+  if (source.totalPoints != null && source.adventurePoints == null && source.collectionPoints == null && source.fruitPoints == null) {
+    return normalizePoints(source.totalPoints);
+  }
   const collectionPoints = source.collectionPoints == null ? source.fruitPoints : source.collectionPoints;
   return normalizePoints(source.adventurePoints) + normalizePoints(collectionPoints);
+}
+
+function getPermanentRank(data) {
+  return getPointRank(getTotalPoints(data));
 }
 
 function getPointRank(points) {
@@ -121,6 +128,7 @@ module.exports = {
   calculateAdventurePoints,
   formatPoints,
   getJourneyInfo,
+  getPermanentRank,
   getPointRank,
   getTotalPoints,
   normalizePoints

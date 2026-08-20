@@ -14,7 +14,7 @@ const {
   getThemeCollectibles,
   rollCollectible
 } = require('./theme-collectibles');
-const { getForcedItemRuleId } = require('./mechanics');
+const { getForcedItemRuleId, getLevelMechanics } = require('./mechanics');
 const { normalizeThemeId } = require('./themes');
 const { RNG, clamp, dayKey, hashString } = require('./utils');
 
@@ -32,7 +32,12 @@ function createOrderQueue(rng, itemIds, boxCount) {
   return queue;
 }
 
-function createValidSolution(rng, orderQueue, activeOrderCount) {
+function createValidSolution(rng, orderQueue, activeOrderCount, sequenceMode) {
+  if (sequenceMode) {
+    return orderQueue.reduce((solution, type) => (
+      solution.concat(Array.from({ length: TARGET_PER_BOX }, () => type))
+    ), []);
+  }
   const solution = [];
   const active = [];
   let cursor = 0;
@@ -66,18 +71,16 @@ function createValidSolution(rng, orderQueue, activeOrderCount) {
 function getActiveOrderCount(level, daily) {
   if (daily) return ACTIVE_ORDER_COUNT;
   if (level <= 1) return 1;
-  return level < 15 ? 2 : ACTIVE_ORDER_COUNT;
+  return level < 10 ? 2 : ACTIVE_ORDER_COUNT;
 }
 
 function getTimeLimitMs(level, daily, boxCount, stackCount) {
   if (daily) return 90000;
-  // 时间随目标箱数量增长，但后期会逐渐收紧。首关约 54 秒，长关卡约
-  // 90–110 秒；既能制造失败压力，也不要求玩家疯狂连点。
-  const seconds = 38
-    + Math.max(1, boxCount) * 4.5
-    + Math.max(1, stackCount) * 2.5
-    - Math.min(80, Math.max(1, level)) * 0.35;
-  return Math.round(clamp(seconds, 48, 118) * 1000);
+  const current = Math.max(1, Math.floor(Number(level) || 1));
+  if (current % 10 === 0) return Math.round(clamp(82 + Math.min(8, current / 40), 82, 90) * 1000);
+  if (current <= 4) return [25000, 30000, 35000, 40000][current - 1];
+  if (current <= 14) return Math.round(clamp(40 + (current - 5) * 1.65, 40, 55) * 1000);
+  return Math.round(clamp(55 + Math.min(20, (current - 15) * 0.28), 55, 75) * 1000);
 }
 
 function pickCollectedTargetItem(rng, themeId, level, daily, options) {
@@ -107,7 +110,10 @@ function pickCollectedTargetItem(rng, themeId, level, daily, options) {
 function applyItemRules(rng, solutionTypes, level, daily, options) {
   const opts = options || {};
   if (opts.disableRules) return [];
-  const unlocked = getUnlockedItemRules(level).filter((rule) => !rule.trap);
+  const allowed = Array.isArray(opts.allowedRuleIds) ? new Set(opts.allowedRuleIds) : null;
+  const unlocked = getUnlockedItemRules(level).filter((rule) => (
+    !rule.trap && (!allowed || allowed.has(rule.id))
+  ));
   if (!unlocked.length) return [];
 
   const candidates = [];
@@ -119,7 +125,7 @@ function applyItemRules(rng, solutionTypes, level, daily, options) {
 
   const desired = opts.forceRuleId
     ? 1
-    : (daily ? 7 : clamp(1 + Math.floor((level - 6) / 7), 1, 8));
+    : (daily ? 4 : clamp(1 + Math.floor((level - 6) / 24), 1, 3));
   const chosen = [];
   const used = new Set();
 
@@ -140,8 +146,8 @@ function applyItemRules(rng, solutionTypes, level, daily, options) {
 function createOrderRules(rng, boxCount, level, daily, options) {
   const opts = options || {};
   const rules = Array.from({ length: boxCount }, () => null);
-  if (!daily && level < 22) return rules;
-  if (!daily && (level === 22 || opts.forceRushOrder)) {
+  if (!daily && level < 15 && !opts.forceRushOrder) return rules;
+  if (!daily && (level === 15 || opts.forceRushOrder)) {
     rules[0] = {
       type: 'rush',
       moves: 9,
@@ -152,7 +158,7 @@ function createOrderRules(rng, boxCount, level, daily, options) {
   const candidates = [];
   for (let i = 2; i < boxCount; i += 1) candidates.push(i);
   rng.shuffle(candidates);
-  const count = daily ? 3 : clamp(1 + Math.floor((level - 22) / 28), 1, 3);
+  const count = daily ? 3 : clamp(1 + Math.floor((level - 15) / 40), 1, 2);
   candidates.slice(0, count).forEach((index) => {
     rules[index] = {
       type: 'rush',
@@ -167,8 +173,9 @@ function insertBombTraps(rng, distributed, orderQueue, level, daily, options) {
   const opts = options || {};
   if (opts.disableRules || opts.disableBombs) return [];
   const forced = opts.forceBomb || opts.forceRuleId === 'bomb';
+  if (!forced && !opts.enabled && !daily) return [];
   if (!forced && !daily && level < 18) return [];
-  const desired = forced ? 1 : (daily ? 2 : clamp(1 + Math.floor((level - 18) / 45), 1, 3));
+  const desired = forced ? 1 : (daily ? 1 : clamp(1 + Math.floor((level - 18) / 90), 1, 2));
   const availableStacks = rng.shuffle(distributed.stacks.map((_, index) => index));
   const safeOrderTypes = orderQueue.filter((type) => !isCollectedTargetItemId(type));
   const traps = [];
@@ -291,7 +298,11 @@ function generateLevel(levelNumber, options) {
     ? Number(opts.seed) >>> 0
     : hashString(`${themeId}:${daily ? 'daily' : 'level'}:${level}:${opts.variant || 0}`);
   const rng = new RNG(seed);
-  const effectiveItemLevel = level + (daily ? 8 : 0);
+  // 主题只改变内容，不重置玩家已经掌握的机制。主程序会传入账号总进度，
+  // 独立调用生成器时则自然退回当前关卡。
+  const accountProgress = Math.max(level, Math.floor(Number(opts.accountProgress) || level));
+  const mechanics = getLevelMechanics(accountProgress, level, daily, rng);
+  const effectiveItemLevel = Math.max(level + (daily ? 8 : 0), accountProgress);
   const unlocked = getUnlockedItems(effectiveItemLevel, themeId);
   const newlyUnlockedItem = daily ? null : getNewlyUnlockedItem(effectiveItemLevel, themeId);
   // 更早拉开可见品类差异：同时目标仍只有 2–3 个，但货架会出现更多未来目标物件，
@@ -306,18 +317,21 @@ function generateLevel(levelNumber, options) {
   const collectedTargetType = collectedTargetItem
     ? createCollectedTargetItemId(collectedTargetItem.collectibleId)
     : '';
-  const newcomerBoxes = [2, 3, 4, 4, 6, 6, 7, 8, 8, 9];
-  const newcomerStacks = [3, 3, 3, 4, 4, 4, 4, 5, 5, 5];
+  const newcomerBoxes = [2, 3, 4, 4];
+  const newcomerStacks = [3, 3, 3, 4];
+  const largeOrder = !daily && level % 10 === 0;
   const boxCount = daily
     ? 18
-    : (level <= 10
-      ? newcomerBoxes[level - 1]
-      : (level < 15
-        ? 8 + Math.floor((level - 11) / 2)
-        : clamp(10 + Math.floor((level - 15) * 0.32), 10, 16)));
+    : (largeOrder
+      ? 12
+      : (level <= 4
+        ? newcomerBoxes[level - 1]
+        : (level <= 14
+          ? clamp(5 + Math.floor((level - 5) / 4), 5, 7)
+          : clamp(8 + Math.floor((level - 15) / 30), 8, 10))));
   const stackCount = daily
     ? 7
-    : (level <= 10 ? newcomerStacks[level - 1] : clamp(5 + Math.floor((level - 10) / 7), 5, 7));
+    : (level <= 4 ? newcomerStacks[level - 1] : clamp(4 + Math.floor((level - 5) / 12), 4, 7));
   const shelfShiftEnabled = daily || level >= 3;
   const activeOrderCount = getActiveOrderCount(level, daily);
   const reservedTargets = [];
@@ -334,11 +348,26 @@ function generateLevel(levelNumber, options) {
     const slot = openingSlots[index] == null ? Math.min(index, orderQueue.length - 1) : openingSlots[index];
     if (slot >= 0) orderQueue[slot] = target;
   });
-  const orderRules = createOrderRules(rng, boxCount, level, daily, opts);
-  const solutionTypes = createValidSolution(rng, orderQueue, activeOrderCount);
+  const orderRules = createOrderRules(rng, boxCount, accountProgress, daily, Object.assign({}, opts, {
+    forceRushOrder: Boolean(opts.forceRushOrder || mechanics.rushEnabled)
+  }));
+  if (mechanics.sequenceMode) {
+    orderRules.forEach((rule, index) => {
+      orderRules[index] = Object.assign({}, rule || {}, {
+        sequence: true,
+        sequencePosition: index + 1
+      });
+    });
+  }
+  const solutionTypes = createValidSolution(rng, orderQueue, activeOrderCount, mechanics.sequenceMode);
   const forcedItemRuleId = opts.forceRuleId || getForcedItemRuleId(level);
+  const allowedRuleIds = ['time_bonus', 'sweep'];
+  if (accountProgress >= 35) allowedRuleIds.push('shield');
+  if (accountProgress >= 55) allowedRuleIds.push('wildcard');
+  if (mechanics.sealedEnabled || forcedItemRuleId === 'sealed') allowedRuleIds.push('sealed');
   const ruleOptions = Object.assign({}, opts, {
-    forceRuleId: opts.disableRules ? '' : forcedItemRuleId
+    forceRuleId: opts.disableRules ? '' : forcedItemRuleId,
+    allowedRuleIds
   });
   const specialRules = applyItemRules(rng, solutionTypes, level, daily, ruleOptions);
   const distributed = distributeAcrossStacks(rng, solutionTypes, stackCount);
@@ -356,8 +385,12 @@ function generateLevel(levelNumber, options) {
     disableRules: opts.disableRules,
     disableBombs: opts.disableBombs,
     forceRuleId: forcedItemRuleId,
-    forceBomb: opts.forceBomb
+    forceBomb: opts.forceBomb,
+    enabled: mechanics.bombEnabled
   });
+
+  const waveCount = daily || largeOrder ? 3 : 1;
+  const waveSize = Math.ceil(boxCount / waveCount);
 
   return {
     id: daily ? `${themeId}-daily-${opts.dateKey || dayKey()}` : `${themeId}-level-${level}`,
@@ -365,12 +398,20 @@ function generateLevel(levelNumber, options) {
     level,
     seed,
     daily,
+    accountProgress,
     timeLimitMs: getTimeLimitMs(level, daily, boxCount, stackCount),
     targetPerBox: TARGET_PER_BOX,
     activeOrderCount,
     bufferCapacity: 0,
     maxBufferCapacity: 0,
     shelfShiftEnabled,
+    strictMistakes: mechanics.strictMistakes,
+    mechanics,
+    movement: mechanics.movement,
+    sequenceMode: mechanics.sequenceMode,
+    waveCount,
+    waveSize,
+    largeOrder,
     stackCount,
     orderQueue,
     orderRules,
@@ -393,6 +434,7 @@ function getDailyLevel(date, options) {
   return generateLevel(24, {
     daily: true,
     themeId: opts.themeId || 'fruit',
+    accountProgress: opts.accountProgress,
     collection: opts.collection,
     pity: opts.pity,
     dateKey: key,

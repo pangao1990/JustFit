@@ -11,6 +11,7 @@ const {
   BOOSTER_COIN_COSTS,
   MAX_STORE_PURCHASE_QUANTITY,
   REVIVE_COIN_COST,
+  getAccountProgressLevel,
   getCollectibleSellValue,
   getStoreProductDefinition,
   isFeatureUnlocked
@@ -82,7 +83,7 @@ class GameApp {
       mechanicIntro: null,
       dailyLogin: this.dailyLogin,
       fruitShopShareImage: '',
-      friendRankMetric: 'coins',
+      friendRankMetric: 'total_points',
       friendRankCanvas: null,
       friendRankAvailable: this.friendRank.available,
       activeRareTimerId: '',
@@ -93,9 +94,18 @@ class GameApp {
       adCoinStatus: this.storage.getAdCoinStatus(),
       revivePanel: '',
       reviveExchangeOffer: null,
-      freePausesRemaining: 1,
+      boosterChoice: null,
+      missedCollectible: null,
+      decorationChoice: this.storage.data.pendingDecorationNode || 0,
+      baseDecorOpen: false,
+      reviveEligibleNewcomer: 0,
+      resumeCountdown: 0,
+      adPlaying: false,
       pendingLevelToast: ''
     };
+    this.pendingBooster = null;
+    this.resumeCountdownStartedAt = 0;
+    this.wasPlayingWhenHidden = false;
 
     this.share.setup(() => this.getShareContext());
     this.friendRank.sync(this.storage.data);
@@ -138,7 +148,15 @@ class GameApp {
       if (!touch) return;
       this.audio.unlock();
       const point = this.renderer.toDesignPoint(touch.clientX, touch.clientY);
-      this.touchStart = { x: point.x, y: point.y, lastX: point.x, lastY: point.y, moved: 0 };
+      const region = this.renderer.hitTest(point.x, point.y);
+      this.touchStart = {
+        x: point.x,
+        y: point.y,
+        lastX: point.x,
+        lastY: point.y,
+        moved: 0,
+        region: region ? { action: region.action, data: region.data && Object.assign({}, region.data) } : null
+      };
     });
 
     this.platform.onTouchMove((event) => {
@@ -171,7 +189,11 @@ class GameApp {
         }
         return;
       }
-      const region = this.renderer.hitTest(point.x, point.y);
+      // 移动卡片以 touch-start 时的身份为准，避免按下后卡片移到邻位，
+      // touch-end 却误选了另一件商品。普通按钮仍以松手位置为准。
+      const region = start.region && start.region.action === 'stack'
+        ? start.region
+        : this.renderer.hitTest(point.x, point.y);
       if (!region) return;
       Promise.resolve(this.handleAction(region.action, region.data, point)).catch((error) => {
         this.platform.log('[action:error]', error && error.stack || error);
@@ -181,6 +203,7 @@ class GameApp {
     });
 
     this.platform.onHide(() => {
+      this.wasPlayingWhenHidden = Boolean(this.view.screen === 'game' && this.model && this.model.status === 'playing');
       this.hidden = true;
       this.audio.pauseMusic();
     });
@@ -189,6 +212,10 @@ class GameApp {
       this.hidden = false;
       this.lastFrameAt = Date.now();
       this.audio.playMusic();
+      if (this.wasPlayingWhenHidden && this.view.screen === 'game' && this.model && this.model.status === 'playing' && this.view.overlay == null) {
+        this._startResumeCountdown();
+      }
+      this.wasPlayingWhenHidden = false;
     });
 
     if (typeof this.platform.onResize === 'function') {
@@ -207,14 +234,20 @@ class GameApp {
 
     if (!this.hidden) {
       this.renderer.update(deltaMs);
+      this._updateResumeCountdown(now);
       if (this.view.screen === 'game' && this.model) {
         const guidedTutorialActive = this.view.tutorialStep > 0;
+        const blockingModal = Boolean(
+          this.view.overlay != null || this.view.helpOpen || guidedTutorialActive || this.busy ||
+          this.view.boosterChoice || this.view.missedCollectible || this.view.decorationChoice ||
+          this.view.revivePanel
+        );
         const timerEvents = this.model.tick(deltaMs, {
           // 新手需要先看懂光圈和目标再操作。三步手把手引导期间暂停关卡
           // 倒计时，避免玩家认真阅读反而输掉第一局；已经出现的闪耀藏品
           // 仍由 GameModel 独立计时，不受这里影响。
-          pauseLevelTimer: this.view.overlay != null || this.view.helpOpen || guidedTutorialActive,
-          allowCollectibleStart: this.view.overlay == null && !this.view.helpOpen && !guidedTutorialActive
+          pauseLevelTimer: blockingModal,
+          allowCollectibleStart: !blockingModal
         });
         this._handleTimerEvents(timerEvents);
         this._handleTerminalState();
@@ -224,6 +257,26 @@ class GameApp {
     }
 
     this.rafId = this.platform.requestAnimationFrame(() => this._loop());
+  }
+
+  _startResumeCountdown() {
+    if (!this.model || this.model.status !== 'playing') return false;
+    this.view.overlay = 'countdown';
+    this.view.resumeCountdown = 3;
+    this.resumeCountdownStartedAt = Date.now();
+    this.lastFrameAt = Date.now();
+    return true;
+  }
+
+  _updateResumeCountdown(now) {
+    if (this.view.overlay !== 'countdown') return;
+    const elapsed = Math.max(0, Number(now) - this.resumeCountdownStartedAt);
+    const value = 3 - Math.floor(elapsed / 700);
+    this.view.resumeCountdown = Math.max(1, value);
+    if (elapsed < 2100) return;
+    this.view.resumeCountdown = 0;
+    this.view.overlay = null;
+    this.lastFrameAt = Date.now();
   }
 
   handleAction(action, data, point) {
@@ -274,10 +327,10 @@ class GameApp {
         this.view.featureIntro = '';
         break;
       case 'friend_rank':
-        this.showFriendRank('coins');
+        this.showFriendRank('total_points');
         break;
       case 'friend_rank_score':
-        this._changeFriendRankMetric('coins');
+        this._changeFriendRankMetric('total_points');
         break;
       case 'friend_rank_collection':
         this._changeFriendRankMetric('collection_count');
@@ -380,15 +433,17 @@ class GameApp {
       case 'pause':
         return this._pauseLevel();
       case 'resume':
-        this.view.overlay = null;
-        this.lastFrameAt = Date.now();
+        this._startResumeCountdown();
+        break;
+      case 'toggle_motion':
+        this._toggleReducedMotion();
         break;
       case 'quit':
         this._recordPendingFailure();
         this.showHome();
         break;
       case 'stack':
-        this._selectStack(data && data.index, point);
+        this._selectStack(data && data.index, point, data && data.token);
         break;
       case 'hint':
         return this._useHint();
@@ -398,6 +453,35 @@ class GameApp {
         return this._useAutoPack();
       case 'add_time':
         return this._useAddTime();
+      case 'booster_coin':
+        return this._confirmBoosterChoice('coins');
+      case 'booster_ad':
+        return this._confirmBoosterChoice('ad');
+      case 'booster_cancel':
+        this.view.boosterChoice = null;
+        this.pendingBooster = null;
+        break;
+      case 'collectible_recover_coin':
+        return this._recoverMissedCollectible('coins');
+      case 'collectible_recover_ad':
+        return this._recoverMissedCollectible('ad');
+      case 'collectible_recover_skip':
+        this.view.missedCollectible = null;
+        this.lastFrameAt = Date.now();
+        break;
+      case 'decoration_warm':
+        return this._chooseDecoration('warm');
+      case 'decoration_fresh':
+        return this._chooseDecoration('fresh');
+      case 'base_decor_open':
+        return this._openBaseDecor();
+      case 'base_decor_warm':
+        return this._applyBaseDecorStyle('warm');
+      case 'base_decor_fresh':
+        return this._applyBaseDecorStyle('fresh');
+      case 'base_decor_close':
+        this.view.baseDecorOpen = false;
+        break;
       case 'revive':
         return this._openReviveChoice();
       case 'revive_ticket':
@@ -422,8 +506,7 @@ class GameApp {
         this.restartLevel();
         break;
       case 'next':
-        this._startNextLevel();
-        break;
+        return this._startNextLevel();
       case 'replay':
         this.restartLevel();
         break;
@@ -449,6 +532,18 @@ class GameApp {
         'store_purchase_dec', 'store_purchase_inc', 'store_purchase_confirm', 'store_purchase_cancel'
       ].indexOf(action) >= 0;
     }
+    if (this.view.boosterChoice) {
+      return ['booster_coin', 'booster_ad', 'booster_cancel'].indexOf(action) >= 0;
+    }
+    if (this.view.missedCollectible) {
+      return ['collectible_recover_coin', 'collectible_recover_ad', 'collectible_recover_skip'].indexOf(action) >= 0;
+    }
+    if (this.view.decorationChoice) {
+      return action === 'decoration_warm' || action === 'decoration_fresh';
+    }
+    if (this.view.baseDecorOpen) {
+      return ['base_decor_warm', 'base_decor_fresh', 'base_decor_close'].indexOf(action) >= 0;
+    }
     if (this.view.revivePanel) {
       if (this.view.revivePanel === 'exchange') {
         return action === 'revive_exchange_confirm' || action === 'revive_panel_close';
@@ -462,7 +557,7 @@ class GameApp {
     if (this.view.screen === 'home') {
       return [
         'play', 'daily', 'challenge', 'share', 'fruit_shop', 'store', 'friend_rank',
-        'toggle_sound', 'toggle_music', 'help'
+        'base_decor_open', 'toggle_sound', 'toggle_music', 'help'
       ].indexOf(action) >= 0;
     }
 
@@ -487,7 +582,8 @@ class GameApp {
 
     if (this.view.overlay === 'mechanic_intro') return action === 'mechanic_continue';
     if (this.view.overlay === 'tutorial_intro') return action === 'tutorial_start';
-    if (this.view.overlay === 'pause') return action === 'resume' || action === 'quit';
+    if (this.view.overlay === 'pause') return action === 'resume' || action === 'quit' || action === 'toggle_motion';
+    if (this.view.overlay === 'countdown') return false;
     if (this.view.overlay === 'rare') return action === 'rare_continue' || action === 'share';
     if (this.view.overlay === 'win') {
       return ['next', 'replay', 'share', 'double_reward', 'quit'].indexOf(action) >= 0;
@@ -504,6 +600,7 @@ class GameApp {
     const targetLevel = Math.max(1, Math.floor(Number(level) || this.storage.getThemeLevel(themeId)));
     const config = generateLevel(targetLevel, {
       themeId,
+      accountProgress: Math.max(getAccountProgressLevel(this.storage.data), (this.storage.data.firstClearCount || 0) + 1),
       seed: opts.seed,
       variant: opts.variant || 0,
       collection: this.storage.data.rareFruits,
@@ -521,12 +618,14 @@ class GameApp {
     const config = opts.seed == null
       ? getDailyLevel(undefined, {
         themeId,
+        accountProgress: Math.max(getAccountProgressLevel(this.storage.data), (this.storage.data.firstClearCount || 0) + 1),
         collection: this.storage.data.rareFruits,
         pity: this.storage.data.themePity[themeId] || 0
       })
       : generateLevel(opts.level || 24, {
         daily: true,
         themeId,
+        accountProgress: Math.max(getAccountProgressLevel(this.storage.data), (this.storage.data.firstClearCount || 0) + 1),
         seed: opts.seed,
         collection: this.storage.data.rareFruits,
         pity: this.storage.data.themePity[themeId] || 0
@@ -607,7 +706,13 @@ class GameApp {
     this.view.storePurchaseOffer = null;
     this.view.revivePanel = '';
     this.view.reviveExchangeOffer = null;
-    this.view.freePausesRemaining = 1;
+    this.view.boosterChoice = null;
+    this.view.missedCollectible = null;
+    this.view.decorationChoice = 0;
+    this.view.baseDecorOpen = false;
+    this.view.resumeCountdown = 0;
+    this.pendingBooster = null;
+    this.view.reviveEligibleNewcomer = 0;
     const levelNotices = [];
     const newItem = config.newItemId ? getItemById(config.newItemId) : null;
     const promotedCollectible = config.promotedCollectibleTargetId
@@ -657,9 +762,14 @@ class GameApp {
     this._beginLevel(this.currentConfig, runInfo);
   }
 
-  _startNextLevel() {
+  async _startNextLevel() {
     const result = this.view.result || (this.model && this.model.getResult());
     if (!result) return;
+    if (!result.daily && this.ads && typeof this.ads.showInterstitial === 'function') {
+      this.busy = true;
+      await this.ads.showInterstitial(result.level, { suppress: Boolean(result.truckChest) });
+      this.busy = false;
+    }
     const activeThemeId = this.storage.data.activeThemeId || result.themeId || 'fruit';
     if (activeThemeId !== result.themeId) {
       this.renderer.showToast(`新主题已开启 · ${getTheme(activeThemeId).name}`);
@@ -691,6 +801,12 @@ class GameApp {
     this.view.storePurchaseOffer = null;
     this.view.revivePanel = '';
     this.view.reviveExchangeOffer = null;
+    this.view.boosterChoice = null;
+    this.view.missedCollectible = null;
+    this.view.decorationChoice = 0;
+    this.view.baseDecorOpen = false;
+    this.view.resumeCountdown = 0;
+    this.pendingBooster = null;
     this.view.tutorialStep = 0;
     this.view.pendingLevelToast = '';
     this.lastFrameAt = Date.now();
@@ -923,6 +1039,16 @@ class GameApp {
     } catch (_) {}
   }
 
+  _getFriendRankViewportSize() {
+    const layout = this.renderer && typeof this.renderer.getFriendRankViewport === 'function'
+      ? this.renderer.getFriendRankViewport()
+      : null;
+    return {
+      width: Math.max(320, Math.floor(Number(layout && layout.viewportWidth) || 614)),
+      height: Math.max(400, Math.floor(Number(layout && layout.viewportHeight) || 820))
+    };
+  }
+
   showFriendRank(metric) {
     this.runId += 1;
     if (typeof this.renderer.clearTransientEffects === 'function') this.renderer.clearTransientEffects();
@@ -940,42 +1066,42 @@ class GameApp {
     this.view.storePurchaseOffer = null;
     this.view.revivePanel = '';
     this.view.reviveExchangeOffer = null;
-    this.view.friendRankMetric = metric === 'collection_count' ? 'collection_count' : 'coins';
+    this.view.friendRankMetric = metric === 'collection_count' ? 'collection_count' : 'total_points';
     this.friendRank.sync(this.storage.data);
-    this.view.friendRankCanvas = this.friendRank.show(this.view.friendRankMetric, 654, 820);
+    const viewport = this._getFriendRankViewportSize();
+    this.view.friendRankCanvas = this.friendRank.show(this.view.friendRankMetric, viewport.width, viewport.height);
     this.view.friendRankAvailable = this.friendRank.available;
     this.lastFrameAt = Date.now();
     this.analytics.report('friend_rank_open', { metric: this.view.friendRankMetric });
   }
 
   _changeFriendRankMetric(metric) {
-    this.view.friendRankMetric = metric === 'collection_count' ? 'collection_count' : 'coins';
-    this.view.friendRankCanvas = this.friendRank.show(this.view.friendRankMetric, 654, 820);
+    this.view.friendRankMetric = metric === 'collection_count' ? 'collection_count' : 'total_points';
+    const viewport = this._getFriendRankViewportSize();
+    this.view.friendRankCanvas = this.friendRank.show(this.view.friendRankMetric, viewport.width, viewport.height);
     this.analytics.report('friend_rank_switch', { metric: this.view.friendRankMetric });
   }
 
   _pauseLevel() {
     if (!this.model || this.model.status !== 'playing') return false;
-    let source = 'free';
-    if ((this.view.freePausesRemaining || 0) > 0) {
-      this.view.freePausesRemaining -= 1;
-    } else if (this.storage.consumePauseTicket()) {
-      source = 'ticket';
-    } else {
-      this.renderer.showToast('暂停次数已用完，可在补给商店购买暂停券');
-      return false;
-    }
     this.view.overlay = 'pause';
     this.analytics.report('level_pause', {
       level: this.model.level,
-      source,
-      pause_tickets: this.storage.getPauseTicketCount()
+      source: 'free'
     });
     return true;
   }
 
-  _selectStack(stackIndex, point) {
+  _selectStack(stackIndex, point, capturedToken) {
     if (!this.model || stackIndex == null) return;
+    if (this.renderer.boardInputBlocked) {
+      this.renderer.showToast('货架正在安全换道，请稍等');
+      return;
+    }
+    if (capturedToken != null && (!this.model.stacks[stackIndex] || this.model.stacks[stackIndex][0] !== capturedToken)) {
+      this.renderer.showToast('货物已换位，请重新点击');
+      return;
+    }
     if (this.view.tutorialStep > 0 && this.model.level === 1 && this.model.moves < 3) {
       const expected = this.model.getHint();
       if (expected >= 0 && stackIndex !== expected) {
@@ -987,6 +1113,7 @@ class GameApp {
     const result = this.model.selectStack(stackIndex);
     if (!result.accepted) {
       if (result.reason === 'frozen') this.renderer.showToast(`冻结中 · ${(result.remainingMs / 1000).toFixed(1)} 秒`);
+      else if (result.reason === 'protected') this.renderer.showToast('准备中，请看金色安全提示');
       return;
     }
 
@@ -995,26 +1122,47 @@ class GameApp {
     if (result.collectible) {
       this._handleCollectibleFound(result.collectible, x, y);
       return;
+    } else if (result.sealBroken) {
+      this.audio.play('place');
+      this.platform.vibrate(false);
+      this.renderer.burst(x, y, result.rule && result.rule.color || '#3E9FD6', 8);
+      this.renderer.floatText('封条拆开，再点一次', x, y - 28, '#3E9FD6');
     } else if (result.matched) {
-      this.storage.creditMatchedItem(result.pointsGained, result.coinsGained);
       this.audio.play('place');
       this.platform.vibrate(false);
       this.renderer.burst(x, y, result.item && result.item.color || CONFIG.COLORS.teal, 7);
       if (result.ruleEffect) {
         this.renderer.floatText(result.ruleEffect, x, y - 30, result.rule && result.rule.color || CONFIG.COLORS.tealDark);
         if (result.clearedCount > 0) this.renderer.burst(x, y, result.rule.color, 16);
+      } else if (result.comboMilestone) {
+        this.audio.play('combo');
+        this.renderer.floatText(`${result.comboMilestone} 连击 · 黄金装箱 +3 秒`, x, y - 30, CONFIG.COLORS.goldDark);
+        this.renderer.burst(x, y, CONFIG.COLORS.gold, 22);
       } else if (this.model.combo >= 3) {
         this.audio.play('combo');
         this.renderer.floatText(`${this.model.combo} 连击！`, x, y - 28, CONFIG.COLORS.coral);
       } else {
-        this.renderer.floatText(`+${result.coinsGained} 金币`, x, y - 24, CONFIG.COLORS.tealDark);
+        this.renderer.floatText(`分数 +${result.pointsGained}`, x, y - 24, CONFIG.COLORS.tealDark);
       }
+      if (result.safeHighlightStack >= 0) this.renderer.showHint(result.safeHighlightStack);
     } else {
-      this.audio.play('fail');
-      this.platform.vibrate(true);
-      this.renderer.kickShake(result.bomb ? 16 : 11);
-      this.renderer.burst(x, y, CONFIG.COLORS.danger, result.bomb ? 22 : 10);
-      this.renderer.floatText(result.bomb ? '炸弹！' : '点错了！', x, y - 24, CONFIG.COLORS.danger);
+      if (result.shieldUsed) {
+        this.audio.play('place');
+        this.platform.vibrate(false);
+        this.renderer.burst(x, y, CONFIG.COLORS.teal, 12);
+        this.renderer.floatText('护盾抵消误触', x, y - 24, CONFIG.COLORS.tealDark);
+      } else {
+        this.audio.play(result.warning ? 'tap' : 'fail');
+        this.platform.vibrate(!result.warning);
+        this.renderer.kickShake(result.bomb ? 16 : (result.warning ? 5 : 11));
+        this.renderer.burst(x, y, CONFIG.COLORS.danger, result.bomb ? 22 : 10);
+        this.renderer.floatText(
+          result.bomb ? '炸弹！' : (result.warning ? '警告 · 时间 -8 秒' : '再次点错！'),
+          x,
+          y - 24,
+          CONFIG.COLORS.danger
+        );
+      }
     }
 
     if (result.completed.length) {
@@ -1030,13 +1178,16 @@ class GameApp {
         CONFIG.COLORS.goldDark
       );
     }
+    if (result.waveCompleted) {
+      this.renderer.showToast(`第 ${result.waveCompleted} 波完成 · 检查点已保存`);
+    }
 
     if (this.view.tutorialStep > 0 && this.model.level === 1) {
       if (result.completed.length) {
         this.view.tutorialStep = 0;
         this.storage.markMechanicSeen('basic_target');
         this.storage.setTutorialComplete(CONFIG.TUTORIAL_VERSION);
-        this.renderer.showToast('学会啦！看目标、点顶层，点错会失败');
+        this.renderer.showToast('学会啦！第一次点错会扣 8 秒，再错才失败');
       } else {
         this.view.tutorialStep = Math.min(3, this.model.moves + 1);
       }
@@ -1046,6 +1197,10 @@ class GameApp {
       level: this.model.level,
       matched: result.matched,
       combo: this.model.combo,
+      warning: Boolean(result.warning),
+      shield_used: Boolean(result.shieldUsed),
+      combo_milestone: result.comboMilestone || 0,
+      wave_completed: result.waveCompleted || 0,
       failure_reason: result.failureReason || ''
     });
     this._handleTerminalState();
@@ -1055,10 +1210,11 @@ class GameApp {
     removeCollectibleFromLevel(this.currentConfig, collectible.id);
     const collection = this.storage.collectCollectible(collectible.id, this.model.level);
     if (!collection) return;
-    const bonus = collection.isNew ? collectible.firstBonus : collectible.duplicateBonus;
+    const bonus = collection.coinBonus || 0;
     this.storage.addCoins(bonus);
     const coins = this.storage.data.coins || 0;
-    const rankAfter = getPointRank(coins);
+    const totalPoints = getTotalPoints(this.storage.data);
+    const rankAfter = getPointRank(totalPoints);
     this.view.rareDiscovery = {
       collectible,
       fruit: collectible,
@@ -1068,13 +1224,14 @@ class GameApp {
       points: collection.points,
       collectionPoints: collection.collectionPoints,
       fruitPoints: collection.collectionPoints,
-      totalPoints: collection.totalPoints,
+      totalPoints,
       coins,
       rescueTicketBonus: collection.rescueTicketBonus,
       rankAfter,
       rankUp: rankAfter.index > collection.rankBefore.index,
       themeProgress: collection.themeProgress,
       themeCompleted: collection.themeCompleted,
+      cosmeticTitle: collection.cosmeticTitle,
       unlockedTheme: collection.unlockedTheme
     };
     if (typeof this.renderer.clearToast === 'function') this.renderer.clearToast();
@@ -1208,12 +1365,94 @@ class GameApp {
       this.view.activeRareTimerId = '';
       if (this.currentConfig) removeCollectibleFromLevel(this.currentConfig, expired.id);
       this.audio.play('fail');
-      this.renderer.showToast('闪耀藏品飞走了，下次要更快');
+      this.view.missedCollectible = {
+        collectible: expired.collectible,
+        cost: 400,
+        rewardAvailable: this._canOfferReward()
+      };
       this.analytics.report('collectible_countdown_expire', {
         collectible_id: expired.id,
         level: this.model.level
       });
     }
+  }
+
+  _recoverMissedCollectible(source) {
+    const offer = this.view.missedCollectible;
+    const collectible = offer && offer.collectible;
+    if (!collectible || !this.model) return false;
+    const expectedRunId = this.runId;
+    const apply = (paymentSource) => {
+      if (this.runId !== expectedRunId || !this.model) return false;
+      const collection = this.storage.collectCollectible(collectible.id, this.model.level);
+      if (!collection) return false;
+      if (collection.coinBonus) this.storage.addCoins(collection.coinBonus);
+      this.view.missedCollectible = null;
+      this.audio.play('rare');
+      this.renderer.confetti();
+      this.renderer.showToast(`${collectible.name} 已追回并收入藏馆`);
+      this.analytics.report('collectible_recover', {
+        collectible_id: collectible.id,
+        level: this.model.level,
+        source: paymentSource
+      });
+      this._syncFriendRank();
+      return true;
+    };
+    if (source === 'coins') {
+      if (!this.storage.spendCoins(400)) {
+        this.renderer.showToast('金币不足，可选择视频追回或放弃');
+        return false;
+      }
+      return apply('coins');
+    }
+    if (source === 'ad' && this._canOfferReward()) {
+      return this._runReward('collectible_recover', () => apply('rewarded_video'));
+    }
+    this.renderer.showToast('视频暂时不可用');
+    return false;
+  }
+
+  _chooseDecoration(style) {
+    if (!this.view.decorationChoice) return false;
+    if (!this.storage.chooseWarehouseDecoration(style)) return false;
+    this.view.decorationChoice = 0;
+    this.renderer.confetti();
+    const name = style === 'fresh' ? '清新薄荷架' : '暖光木架';
+    this.renderer.showToast(`已应用到首页：${name}`);
+    this.analytics.report('base_decor_choose', {
+      style: style === 'fresh' ? 'fresh' : 'warm',
+      unlocked: this.storage.data.warehouseDecorations.length
+    });
+    return true;
+  }
+
+  _openBaseDecor() {
+    const decorations = Array.isArray(this.storage.data.warehouseDecorations)
+      ? this.storage.data.warehouseDecorations
+      : [];
+    if (!decorations.length) {
+      this.renderer.showToast(`累计 ${CONFIG.SHOP_NODE_STARS} 颗星后解锁第 1 个基地装饰`);
+      return false;
+    }
+    this.view.baseDecorOpen = true;
+    this.analytics.report('base_decor_open', {
+      unlocked: decorations.length,
+      style: this.storage.data.warehouseStyle || 'warm'
+    });
+    return true;
+  }
+
+  _applyBaseDecorStyle(style) {
+    const choice = style === 'fresh' ? 'fresh' : 'warm';
+    if (!this.storage.setWarehouseStyle(choice)) {
+      this.renderer.showToast('该风格尚未解锁，下次装饰奖励可选择');
+      return false;
+    }
+    const name = choice === 'fresh' ? '清新薄荷架' : '暖光木架';
+    this.renderer.showToast(`首页已切换为${name}`);
+    this.analytics.report('base_decor_apply', { style: choice });
+    return true;
   }
 
   _showWin() {
@@ -1230,16 +1469,25 @@ class GameApp {
     const rewards = this.storage.recordResult(result);
     result.streakBonus = rewards && rewards.streakBonus || 0;
     result.winStreak = rewards && rewards.winStreak || 0;
+    result.boxCoins = rewards && rewards.boxCoins || 0;
     result.completionCoins = rewards && rewards.completionCoins || 0;
     result.starCoins = rewards && rewards.starCoins || 0;
     result.dailyBonusCoins = rewards && rewards.dailyBonusCoins || 0;
-    result.earnedCoins = rewards && rewards.earnedCoins || result.packingCoinsEarned || 0;
+    result.repeatCoins = rewards && rewards.repeatCoins || 0;
+    result.truckChest = Boolean(rewards && rewards.truckChest);
+    result.truckProgress = rewards && rewards.truckProgress || 0;
+    result.firstClear = Boolean(rewards && rewards.firstClear);
+    result.earnedCoins = rewards && rewards.earnedCoins || 0;
     result.coins = this.storage.data.coins || 0;
-    result.adventurePointsGained = (rewards && rewards.adventurePoints || 0) + (result.itemPointsEarned || 0);
+    result.adventurePointsGained = rewards && rewards.adventurePoints || 0;
     result.totalPoints = rewards && rewards.totalPoints || getTotalPoints(this.storage.data);
-    result.pointRank = rewards && rewards.rankAfter || getPointRank(result.coins);
+    result.pointRank = rewards && rewards.rankAfter || getPointRank(result.totalPoints);
     result.rankUp = Boolean(rewards && rewards.rankUp);
     result.rescueTicketBonus = rewards && rewards.rescueTicketBonus || 0;
+    result.unlockedTheme = rewards && rewards.unlockedTheme || null;
+    result.dailyTaskStamps = rewards && rewards.dailyTaskStamps || 0;
+    result.activityReward = Boolean(rewards && rewards.activityReward);
+    this.view.decorationChoice = rewards && rewards.decorationUnlocked || 0;
     this.resultRecorded = true;
     this.friendRank.sync(this.storage.data);
     this.audio.play('win');
@@ -1252,19 +1500,14 @@ class GameApp {
       score: result.score,
       moves: result.moves,
       mistakes: result.totalMistakes,
+      first_clear: Boolean(result.firstClear),
+      earned_coins: result.earnedCoins || 0,
+      truck_chest: Boolean(result.truckChest),
+      ad_opportunity: Boolean(result.truckChest && this._canOfferReward()),
       challenge_beat: Boolean(result.challengeBeat)
     });
 
-    if (!result.daily) {
-      if (this.interstitialTimer != null) clearTimeout(this.interstitialTimer);
-      const runId = this.runId;
-      this.interstitialTimer = setTimeout(() => {
-        this.interstitialTimer = null;
-        if (this.runId === runId && this.view.overlay === 'win') {
-          this.ads.showInterstitial(result.level);
-        }
-      }, 900);
-    }
+    if (!result.daily && this.ads && typeof this.ads.noteWin === 'function') this.ads.noteWin(result.level);
   }
 
   _showFail() {
@@ -1272,7 +1515,7 @@ class GameApp {
     this.view.result = this.model.getResult();
     this.view.result.coins = this.storage.data.coins || 0;
     this.view.result.totalPoints = getTotalPoints(this.storage.data);
-    this.view.result.pointRank = getPointRank(this.view.result.coins);
+    this.view.result.pointRank = getPointRank(this.view.result.totalPoints);
     this.view.overlay = 'fail';
     this.view.revivePanel = '';
     this.view.reviveExchangeOffer = null;
@@ -1297,20 +1540,22 @@ class GameApp {
   }
 
   _useHint() {
-    return this._obtainBooster('hint', BOOSTER_COSTS.hint, () => {
-      const index = this.model.getHint();
-      if (index < 0) {
+    const apply = (adEnhanced) => {
+      const indices = this.model.getHints(adEnhanced ? 3 : 1);
+      if (!indices.length) {
         this.renderer.showToast('现在没有可提示的商品');
         return;
       }
-      this.renderer.showHint(index);
-      this.renderer.showToast('金色光圈就是推荐商品');
-      this.analytics.report('booster_use', { type: 'hint', level: this.model.level });
-    });
+      if (typeof this.renderer.showHints === 'function') this.renderer.showHints(indices);
+      else this.renderer.showHint(indices[0]);
+      this.renderer.showToast(adEnhanced ? '已标出 3 个安全目标' : '金色光圈就是推荐商品');
+      this.analytics.report('booster_use', { type: 'hint', level: this.model.level, enhanced: Boolean(adEnhanced) });
+    };
+    return this._obtainBooster('hint', BOOSTER_COSTS.hint, () => apply(false), () => apply(true));
   }
 
   _useShuffle() {
-    return this._obtainBooster('shuffle', BOOSTER_COSTS.shuffle, () => {
+    const apply = () => {
       if (!this.model.shuffleVisible()) {
         this.renderer.showToast('可整理的商品还不够');
         return;
@@ -1318,72 +1563,112 @@ class GameApp {
       this.renderer.kickShake(5);
       this.renderer.showToast('最上层商品已重新整理');
       this.analytics.report('booster_use', { type: 'shuffle', level: this.model.level });
-    });
+    };
+    return this._obtainBooster('shuffle', BOOSTER_COSTS.shuffle, apply, apply);
   }
 
   _useAutoPack() {
-    const apply = () => {
-      const results = this.model.autoPack();
+    const apply = (adEnhanced) => {
+      const results = this.model.autoPack(adEnhanced
+        ? { maxItems: 12, stopAfterBox: true }
+        : { maxItems: 4 });
       if (!results.length) {
         this.renderer.showToast('当前没有能直接装箱的商品');
         return;
       }
-      const earnedPoints = results.reduce((sum, result) => sum + (result.pointsGained || 0), 0);
-      const earnedCoins = results.reduce((sum, result) => sum + (result.coinsGained || 0), 0);
-      this.storage.creditMatchedItem(earnedPoints, earnedCoins);
-      this._syncFriendRank();
       const completed = results.reduce((sum, result) => sum + result.completed.length, 0);
+      const packed = results.filter((result) => result.matched).length;
       this.audio.play(completed ? 'pack' : 'combo');
       this.renderer.burst(this.renderer.width / 2, this.renderer.height * 0.54, CONFIG.COLORS.gold, 20);
-      this.renderer.floatText(`自动装入 ${results.length} 件 · +${earnedCoins} 金币`, this.renderer.width / 2, this.renderer.height * 0.48, CONFIG.COLORS.goldDark);
+      this.renderer.floatText(
+        adEnhanced && completed ? '自动装满 1 箱 · 连击保留' : `自动装入 ${packed} 件 · 连击保留`,
+        this.renderer.width / 2,
+        this.renderer.height * 0.48,
+        CONFIG.COLORS.goldDark
+      );
       this.analytics.report('booster_use', {
         type: 'auto_pack',
         level: this.model.level,
-        items: results.length
+        items: packed,
+        enhanced: Boolean(adEnhanced)
       });
       this._handleTerminalState();
     };
-    if (this.storage.consumeBoosterVoucher('auto_pack')) {
-      apply();
-      return true;
-    }
-    if (this._canOfferReward()) return this._runReward('auto_pack', apply);
-    return this._obtainBooster('auto_pack', BOOSTER_COSTS.autoPackFallback, apply);
+    return this._obtainBooster(
+      'auto_pack',
+      BOOSTER_COSTS.autoPackFallback,
+      () => apply(false),
+      () => apply(true)
+    );
   }
 
   _useAddTime() {
-    return this._obtainBooster('add_time', BOOSTER_COSTS.addTime, () => {
-      if (!this.model.addTime(15000)) return;
+    const apply = (adEnhanced) => {
+      const milliseconds = adEnhanced ? 20000 : 15000;
+      if (!this.model.addTime(milliseconds)) return;
       this.audio.play('pack');
       this.renderer.burst(this.renderer.width / 2, this.renderer.safeTop + 90, CONFIG.COLORS.teal, 12);
-      this.renderer.showToast('关卡时间 +15 秒');
-      this.analytics.report('booster_use', { type: 'add_time', level: this.model.level });
-    });
+      this.renderer.showToast(`关卡时间 +${milliseconds / 1000} 秒`);
+      this.analytics.report('booster_use', { type: 'add_time', level: this.model.level, enhanced: Boolean(adEnhanced) });
+    };
+    return this._obtainBooster('add_time', BOOSTER_COSTS.addTime, () => apply(false), () => apply(true));
   }
 
-  _obtainBooster(type, cost, apply) {
+  _obtainBooster(type, cost, coinApply, adApply) {
     if (!this.model || this.model.status !== 'playing') return false;
     if (this.storage.consumeBoosterVoucher(type)) {
-      apply();
+      coinApply();
       return true;
     }
-    if (this.storage.data.coins >= cost) {
-      this.storage.spendCoins(cost);
-      this._syncFriendRank();
-      apply();
+    this.pendingBooster = {
+      type,
+      cost,
+      runId: this.runId,
+      coinApply,
+      adApply: adApply || coinApply
+    };
+    this.view.boosterChoice = {
+      type,
+      cost,
+      coins: this.storage.data.coins || 0,
+      rewardAvailable: this._canOfferReward()
+    };
+    return true;
+  }
+
+  _confirmBoosterChoice(source) {
+    const pending = this.pendingBooster;
+    if (!pending || pending.runId !== this.runId || !this.model || this.model.status !== 'playing') return false;
+    if (source === 'coins') {
+      if (!this.storage.spendCoins(pending.cost)) {
+        this.renderer.showToast(`金币不足，需要 ${pending.cost}`);
+        return false;
+      }
+      this.view.boosterChoice = null;
+      this.pendingBooster = null;
+      this.analytics.report('booster_choice', { type: pending.type, source: 'coins', cost: pending.cost });
+      pending.coinApply();
       return true;
     }
-    if (!this._canOfferReward()) {
-      this.renderer.showToast(`金币不足，需要 ${cost}`);
+    if (source !== 'ad' || !this._canOfferReward()) {
+      this.renderer.showToast('视频暂时不可用，可使用金币或取消');
       return false;
     }
-    return this._runReward(`booster_${type}`, apply);
+    return this._runReward(`booster_${pending.type}`, () => {
+      if (pending.runId !== this.runId) return;
+      this.view.boosterChoice = null;
+      this.pendingBooster = null;
+      this.analytics.report('booster_choice', { type: pending.type, source: 'rewarded_video', cost: 0 });
+      pending.adApply();
+    });
   }
 
   _openReviveChoice() {
     if (!this.model || this.model.status !== 'failed' || this.model.revived) return false;
     this.view.revivePanel = 'choice';
     this.view.reviveExchangeOffer = null;
+    const rescue = this.storage.getRescueStatus(this.model.level);
+    this.view.reviveEligibleNewcomer = rescue.newcomer;
     return true;
   }
 
@@ -1403,13 +1688,15 @@ class GameApp {
       this.resultRecorded = false;
       this.lastFrameAt = Date.now();
       this.audio.play('pack');
-      this.renderer.showToast(failureReason === 'timeout' ? '补回到 15 秒，继续翻盘！' : '获得一次继续机会，别再点错！');
+      const hint = this.model.getSafeHighlightStack();
+      if (hint >= 0) this.renderer.showHint(hint);
+      this.renderer.showToast(failureReason === 'timeout' ? '补回到 20 秒，安全目标已标出' : '警告已清除，安全目标已标出');
       this.analytics.report('revive_success', { level: this.model.level, source: source || 'unknown' });
     };
 
     const source = preferredSource || '';
-    if ((!source || source === 'ticket') && (this.storage.data.rescueTickets || 0) > 0) {
-      if (!this.storage.spendRescueTicket()) return false;
+    if ((!source || source === 'ticket') && this.storage.getRescueStatus(this.model.level).total > 0) {
+      if (!this.storage.spendRescueTicket(this.model.level)) return false;
       apply('ticket');
       return true;
     }
@@ -1492,26 +1779,27 @@ class GameApp {
     this.resultRecorded = false;
     this.lastFrameAt = Date.now();
     this.audio.play('pack');
-    this.renderer.showToast(failureReason === 'timeout' ? '补回到 15 秒，继续翻盘！' : '获得一次继续机会，别再点错！');
+    const hint = this.model.getSafeHighlightStack();
+    if (hint >= 0) this.renderer.showHint(hint);
+    this.renderer.showToast(failureReason === 'timeout' ? '补回到 20 秒，安全目标已标出' : '警告已清除，安全目标已标出');
     this.analytics.report('revive_success', { level: this.model.level, source });
     return true;
   }
 
   _doubleReward() {
-    if (!this.view.result || this.view.result.daily || this.view.doubleClaimed) return false;
+    if (!this.view.result || !this.view.result.truckChest || this.view.result.daily || this.view.doubleClaimed) return false;
     const expectedRunId = this.runId;
     return this._runReward('double_reward', () => {
       if (this.runId !== expectedRunId || !this.view.result || this.view.doubleClaimed) return;
-      const extraCoins = 20 + this.view.result.stars * 10;
-      this.storage.addCoins(extraCoins);
+      const extraCoins = this.storage.claimTruckChestUpgrade();
       this.view.result.earnedCoins = (this.view.result.earnedCoins || 0) + extraCoins;
       this.view.result.coins = this.storage.data.coins || 0;
-      this.view.result.pointRank = getPointRank(this.view.result.coins);
+      this.view.result.pointRank = getPointRank(getTotalPoints(this.storage.data));
       this._syncFriendRank();
       this.view.doubleClaimed = true;
       this.audio.play('pack');
       this.renderer.burst(this.renderer.width / 2, this.renderer.height / 2, CONFIG.COLORS.gold, 24);
-      this.renderer.showToast(`奖励翻倍，再得 ${extraCoins} 金币`);
+      this.renderer.showToast(`货车宝箱升级，再得 ${extraCoins} 金币`);
       this.analytics.report('double_reward_claim', {
         level: this.view.result.level,
         coins: extraCoins
@@ -1522,8 +1810,11 @@ class GameApp {
   async _runReward(reason, onCompleted) {
     if (this.busy) return false;
     this.busy = true;
+    this.view.adPlaying = true;
     const result = await this.ads.showRewarded(reason);
     this.busy = false;
+    this.view.adPlaying = false;
+    this.lastFrameAt = Date.now();
     if (!result || !result.completed) {
       this.renderer.showToast(result && result.reason === 'closed_early' ? '完整看完视频才能获得奖励' : '视频暂时不可用，请稍后再试');
       return false;
@@ -1551,15 +1842,23 @@ class GameApp {
     this.renderer.showToast(enabled ? '音乐已开启' : '音乐已关闭');
   }
 
+  _toggleReducedMotion() {
+    const enabled = !Boolean(this.storage.data.reducedMotion);
+    this.storage.setPreference('reducedMotion', enabled);
+    this.renderer.showToast(enabled ? '舒缓动态已开启：速度与幅度降低 30%' : '标准动态已恢复');
+  }
+
   getShareContext() {
     const collection = this.storage.data.rareFruits || {};
     const selectedThemeId = this.view.collectionThemeId || this.storage.data.activeThemeId || 'fruit';
     const selectedTheme = getTheme(selectedThemeId);
     const rarest = getRarestDiscoveredCollectible(collection, selectedThemeId);
     const coins = this.storage.data.coins || 0;
-    const rank = getPointRank(coins);
+    const totalPoints = getTotalPoints(this.storage.data);
+    const rank = getPointRank(totalPoints);
     const common = {
       coins,
+      totalPoints,
       pointRankName: rank.name,
       rescueTickets: this.storage.data.rescueTickets || 0,
       themeId: selectedThemeId,
